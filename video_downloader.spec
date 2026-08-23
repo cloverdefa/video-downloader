@@ -112,7 +112,8 @@ for label, path in [
 ]:
     if path:
         print(
-            f"[spec] {label:8s} → {path}  ({os.path.getsize(path) / 1024 / 1024:.1f} MB)"
+            f"[spec] {label:8s} -> {path}  "
+            f"({os.path.getsize(path) / 1024 / 1024:.1f} MB)"
         )
     else:
         print(f"[spec] {label:8s} → 未找到")
