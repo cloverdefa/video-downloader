@@ -17,8 +17,6 @@ jobs:
           to: ${{ secrets.GROUPS_ID }}
           token: ${{ secrets.TELEGRAM_TOKEN }}
           message: |
-            🚀 ${{ github.actor }} 推送了新的 Commit
-
             📦 儲存庫
             ${{ github.repository }}
 
