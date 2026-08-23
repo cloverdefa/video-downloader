@@ -7,15 +7,31 @@ on:
     branches:
       - main
 
+  workflow_dispatch:
+    inputs:
+      release_type:
+        description: Release version type
+        required: true
+        type: choice
+        options:
+          - patch
+          - minor
+          - major
+        default: patch
+
 permissions:
   contents: write
 
 jobs:
   release:
     if: >
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.base.ref == 'main' &&
-      github.event.pull_request.head.ref == 'test'
+      github.event_name == 'workflow_dispatch' ||
+      (
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.base.ref == 'main' &&
+        github.event.pull_request.head.ref == 'test'
+      )
+
     runs-on: windows-latest
 
     steps:
@@ -28,6 +44,7 @@ jobs:
         with:
           ref: main
           fetch-depth: 0
+          token: ${{ secrets.RELEASE_TOKEN }}
 
       # ============================================================
       # Setup Python
@@ -183,31 +200,133 @@ jobs:
         id: version
         shell: pwsh
         run: |
-          git fetch --tags
+          $ErrorActionPreference = "Stop"
 
-          $tags = git tag --list "v1.0.*"
+          git fetch --tags --force
 
-          if (-not $tags) {
-            $patch = 1
+          # ----------------------------------------------------------
+          # Find latest semantic version tag
+          # ----------------------------------------------------------
+
+          $latestTag = @(
+            git tag --list "v*" |
+            Where-Object {
+              $_ -match '^v[0-9]+\.[0-9]+\.[0-9]+$'
+            } |
+            Sort-Object {
+              $parts = $_.Substring(1).Split('.')
+              [version]::new(
+                [int]$parts[0],
+                [int]$parts[1],
+                [int]$parts[2]
+              )
+            }
+          ) |
+          Select-Object -Last 1
+
+          # ----------------------------------------------------------
+          # Determine release type
+          #
+          # PR merge:
+          #   patch
+          #
+          # Manual:
+          #   patch / minor / major
+          # ----------------------------------------------------------
+
+          if ("${{ github.event_name }}" -eq "workflow_dispatch") {
+            $releaseType = "${{ inputs.release_type }}"
           }
           else {
-            $patch = ($tags |
-              ForEach-Object {
-                [int]($_ -replace '^v1\.0\.', '')
-              } |
-              Measure-Object -Maximum).Maximum
-
-            $patch++
+            $releaseType = "patch"
           }
 
-          $version = "1.0.$patch"
+          Write-Host "Latest tag: $latestTag"
+          Write-Host "Release type: $releaseType"
+
+          # ----------------------------------------------------------
+          # Calculate next version
+          # ----------------------------------------------------------
+
+          if (-not $latestTag) {
+            switch ($releaseType) {
+              "patch" {
+                $major = 0
+                $minor = 1
+                $patch = 1
+              }
+
+              "minor" {
+                $major = 0
+                $minor = 2
+                $patch = 0
+              }
+
+              "major" {
+                $major = 1
+                $minor = 0
+                $patch = 0
+              }
+
+              default {
+                throw "Invalid release type: $releaseType"
+              }
+            }
+          }
+          else {
+            $parts = $latestTag.Substring(1).Split('.')
+
+            $major = [int]$parts[0]
+            $minor = [int]$parts[1]
+            $patch = [int]$parts[2]
+
+            switch ($releaseType) {
+              "patch" {
+                $patch++
+              }
+
+              "minor" {
+                $minor++
+                $patch = 0
+              }
+
+              "major" {
+                $major++
+                $minor = 0
+                $patch = 0
+              }
+
+              default {
+                throw "Invalid release type: $releaseType"
+              }
+            }
+          }
+
+          $version = "$major.$minor.$patch"
           $tag = "v$version"
+
+          # ----------------------------------------------------------
+          # Prevent duplicate tag
+          # ----------------------------------------------------------
+
+          $existingTag = git tag --list $tag
+
+          if ($existingTag) {
+            throw "Tag $tag already exists."
+          }
 
           Write-Host "Next version: $version"
           Write-Host "Release tag:  $tag"
 
-          echo "version=$version" >> $env:GITHUB_OUTPUT
-          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+          "version=$version" | Out-File `
+            -FilePath $env:GITHUB_OUTPUT `
+            -Append `
+            -Encoding utf8
+
+          "tag=$tag" | Out-File `
+            -FilePath $env:GITHUB_OUTPUT `
+            -Append `
+            -Encoding utf8
 
       # ============================================================
       # Update application version
@@ -275,6 +394,7 @@ jobs:
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
+          token: ${{ secrets.RELEASE_TOKEN }}
           tag_name: ${{ steps.version.outputs.tag }}
           target_commitish: main
           name: v${{ steps.version.outputs.version }}
