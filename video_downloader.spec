@@ -17,6 +17,7 @@ def find_tool(name: str, required_mb: float = 0.0) -> str | None:
     found = shutil.which(name)
     if found:
         candidates.append(found)
+
     if os.name == "nt":
         found_exe = shutil.which(f"{name}.exe")
         if found_exe and found_exe not in candidates:
@@ -25,9 +26,14 @@ def find_tool(name: str, required_mb: float = 0.0) -> str | None:
     for path in candidates:
         if required_mb > 0:
             size_mb = os.path.getsize(path) / 1024 / 1024
+
             if size_mb < required_mb:
-                print(f"[spec] 略過 {path}（{size_mb:.2f} MB，疑似 shim）")
+                print(
+                    f"[spec] skip {path} "
+                    f"({size_mb:.2f} MB, possible shim)"
+                )
                 continue
+
         return path
 
     return None
@@ -36,6 +42,7 @@ def find_tool(name: str, required_mb: float = 0.0) -> str | None:
 def to_short_path(path: str, name: str) -> str:
     dest_dir = Path(tempfile.gettempdir()) / "pyinstaller_tools"
     dest_dir.mkdir(exist_ok=True)
+
     suffix = Path(path).suffix
     dest = dest_dir / f"{name}{suffix}"
 
@@ -43,10 +50,13 @@ def to_short_path(path: str, name: str) -> str:
     dst_size = os.path.getsize(dest) if dest.exists() else -1
 
     if src_size != dst_size:
-        print(f"[spec] 複製 {name}（{src_size / 1024 / 1024:.1f} MB）→ {dest}")
+        print(
+            f"[spec] copy {name} "
+            f"({src_size / 1024 / 1024:.1f} MB) -> {dest}"
+        )
         shutil.copy2(path, dest)
     else:
-        print(f"[spec] 暫存複本已是最新：{dest}")
+        print(f"[spec] cached copy is up to date: {dest}")
 
     return str(dest)
 
@@ -91,7 +101,7 @@ def get_tool_version(path: str, name: str) -> str:
         return first_line
 
     except Exception as e:
-        print(f"[spec] 無法取得 {name} 版本: {e}")
+        print(f"[spec] failed to get {name} version: {e}")
         return "unknown"
 
 
@@ -101,9 +111,22 @@ ffmpeg_path = find_tool("ffmpeg", required_mb=_SHIM_THRESHOLD_MB)
 deno_path = find_tool("deno", required_mb=_SHIM_THRESHOLD_MB)
 
 APP_VERSION = "2026.08.20-Fix.1"
-YTDLP_VERSION = get_tool_version(yt_dlp_path, "yt-dlp") if yt_dlp_path else "missing"
-FFMPEG_VERSION = get_tool_version(ffmpeg_path, "ffmpeg") if ffmpeg_path else "missing"
-DENO_VERSION = get_tool_version(deno_path, "deno") if deno_path else "missing"
+YTDLP_VERSION = (
+    get_tool_version(yt_dlp_path, "yt-dlp")
+    if yt_dlp_path
+    else "missing"
+)
+FFMPEG_VERSION = (
+    get_tool_version(ffmpeg_path, "ffmpeg")
+    if ffmpeg_path
+    else "missing"
+)
+DENO_VERSION = (
+    get_tool_version(deno_path, "deno")
+    if deno_path
+    else "missing"
+)
+
 
 for label, path in [
     ("yt-dlp", yt_dlp_path),
@@ -112,33 +135,54 @@ for label, path in [
 ]:
     if path:
         print(
-            f"[spec] {label:8s} -> {path}  "
+            f"[spec] {label:8s} -> {path} "
             f"({os.path.getsize(path) / 1024 / 1024:.1f} MB)"
         )
     else:
-        print(f"[spec] {label:8s} → 未找到")
+        print(f"[spec] {label:8s} -> not found")
+
 
 print(
-    f"[spec] 版本  app={APP_VERSION}  yt-dlp={YTDLP_VERSION}  ffmpeg={FFMPEG_VERSION}  deno={DENO_VERSION}"
+    f"[spec] version "
+    f"app={APP_VERSION} "
+    f"yt-dlp={YTDLP_VERSION} "
+    f"ffmpeg={FFMPEG_VERSION} "
+    f"deno={DENO_VERSION}"
 )
 
+
 missing = [
-    n for n, p in {"yt-dlp": yt_dlp_path, "ffmpeg": ffmpeg_path}.items() if not p
+    n
+    for n, p in {
+        "yt-dlp": yt_dlp_path,
+        "ffmpeg": ffmpeg_path,
+    }.items()
+    if not p
 ]
+
 if missing:
-    raise FileNotFoundError(f"找不到必要工具：{', '.join(missing)}")
+    raise FileNotFoundError(
+        f"Required tools not found: {', '.join(missing)}"
+    )
+
 
 # ── 複製到短路徑 ──────────────────────────────────────────────────────────────
 yt_dlp_short = to_short_path(yt_dlp_path, "yt-dlp")
 ffmpeg_short = to_short_path(ffmpeg_path, "ffmpeg")
 
+
 # ── binaries ──────────────────────────────────────────────────────────────────
 binaries = [(yt_dlp_short, ".")]
+
 if deno_path:
     deno_short = to_short_path(deno_path, "deno")
     binaries.append((deno_short, "."))
 else:
-    print("[spec] 警告：未找到 deno，YouTube 畫質可能受限。")
+    print(
+        "[spec] WARNING: deno not found; "
+        "YouTube quality may be limited."
+    )
+
 
 # ── datas（ffmpeg 純複製，繞過 binary 分析）───────────────────────────────────
 datas = [(ffmpeg_short, ".")]
@@ -146,9 +190,8 @@ datas = [(ffmpeg_short, ".")]
 print(f"[spec] binaries = {[b[0] for b in binaries]}")
 print(f"[spec] datas    = {[d[0] for d in datas]}")
 
+
 # ── runtime hook：將版本字串注入 sys，取代 build_info.py ──────────────────────
-# 此檔在 exe 啟動時最早執行，早於任何 import，因此 video_downloader.py
-# 只需讀取 sys 屬性即可，不需要任何額外的 .py 檔案。
 hook_content = f"""\
 import sys
 sys._app_version    = "{APP_VERSION}"
@@ -157,9 +200,15 @@ sys._ffmpeg_version = "{FFMPEG_VERSION}"
 sys._deno_version   = "{DENO_VERSION}"
 """
 
+
 hook_path = Path("runtime_hook_versions.py")
-hook_path.write_text(hook_content, encoding="utf-8")
-print(f"[spec] runtime hook 寫入：{hook_path}")
+hook_path.write_text(
+    hook_content,
+    encoding="utf-8",
+)
+
+print(f"[spec] runtime hook written: {hook_path}")
+
 
 # ── Analysis ──────────────────────────────────────────────────────────────────
 a = Analysis(
@@ -175,7 +224,9 @@ a = Analysis(
     noarchive=False,
 )
 
+
 pyz = PYZ(a.pure)
+
 
 exe = EXE(
     pyz,
@@ -190,18 +241,26 @@ exe = EXE(
     console=False,
 )
 
+
 # ── build 完畢後刪除 runtime hook 暫存檔 ─────────────────────────────────────
-# Analysis 已將此檔打包進 exe，本地端不再需要，避免殘留在專案目錄。
 try:
     hook_path.unlink()
-    print(f"[spec] runtime hook 已刪除：{hook_path}")
+    print(f"[spec] runtime hook removed: {hook_path}")
 except Exception as e:
-    print(f"[spec] runtime hook 刪除失敗（可忽略）：{e}")
+    print(
+        f"[spec] failed to remove runtime hook "
+        f"(ignored): {e}"
+    )
 
-# build/ 資料夾為 PyInstaller 的中間產物，exe 已輸出至 dist/，可直接刪除。
+
+# build/ 資料夾為 PyInstaller 的中間產物
 build_dir = Path("build")
+
 try:
     shutil.rmtree(build_dir)
-    print(f"[spec] build 資料夾已刪除：{build_dir}")
+    print(f"[spec] build directory removed: {build_dir}")
 except Exception as e:
-    print(f"[spec] build 資料夾刪除失敗（可忽略）：{e}")
+    print(
+        f"[spec] failed to remove build directory "
+        f"(ignored): {e}"
+    )
