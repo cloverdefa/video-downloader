@@ -1,0 +1,283 @@
+name: Release
+
+on:
+  pull_request:
+    types:
+      - closed
+    branches:
+      - main
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    if: >
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
+      github.event.pull_request.head.ref == 'test'
+    runs-on: windows-latest
+
+    steps:
+      # ============================================================
+      # Checkout
+      # ============================================================
+
+      - name: Checkout main
+        uses: actions/checkout@v4
+        with:
+          ref: main
+          fetch-depth: 0
+
+      # ============================================================
+      # Setup Python
+      # ============================================================
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.x"
+
+      # ============================================================
+      # Install Python dependencies
+      # ============================================================
+
+      - name: Install dependencies
+        shell: pwsh
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+
+      # ============================================================
+      # Install yt-dlp
+      # ============================================================
+
+      - name: Install yt-dlp
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\bin"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $bin | Out-Null
+
+          $url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile "$bin\yt-dlp.exe"
+
+          Add-Content `
+            $env:GITHUB_PATH `
+            $bin
+
+          Write-Host "yt-dlp version:"
+          & "$bin\yt-dlp.exe" --version
+
+      # ============================================================
+      # Install FFmpeg
+      # ============================================================
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\bin"
+          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          $extract = "$env:RUNNER_TEMP\ffmpeg"
+
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $zip
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath $extract `
+            -Force
+
+          $ffmpeg = Get-ChildItem `
+            -Path $extract `
+            -Filter "ffmpeg.exe" `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $ffmpeg) {
+            throw "ffmpeg.exe not found"
+          }
+
+          Copy-Item `
+            $ffmpeg.FullName `
+            "$bin\ffmpeg.exe" `
+            -Force
+
+          Write-Host "FFmpeg version:"
+          & "$bin\ffmpeg.exe" -version |
+            Select-Object -First 1
+
+      # ============================================================
+      # Install Deno
+      # ============================================================
+
+      - name: Install Deno
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\bin"
+          $zip = "$env:RUNNER_TEMP\deno.zip"
+          $extract = "$env:RUNNER_TEMP\deno"
+
+          $url = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $zip
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath $extract `
+            -Force
+
+          if (-not (Test-Path "$extract\deno.exe")) {
+            throw "deno.exe not found"
+          }
+
+          Copy-Item `
+            "$extract\deno.exe" `
+            "$bin\deno.exe" `
+            -Force
+
+          Write-Host "Deno version:"
+          & "$bin\deno.exe" --version
+
+      # ============================================================
+      # Verify build dependencies
+      # ============================================================
+
+      - name: Verify dependencies
+        shell: pwsh
+        run: |
+          Write-Host "=============================="
+          Write-Host "yt-dlp"
+          Write-Host "=============================="
+          yt-dlp --version
+
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "FFmpeg"
+          Write-Host "=============================="
+          ffmpeg -version |
+            Select-Object -First 1
+
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "Deno"
+          Write-Host "=============================="
+          deno --version
+
+      # ============================================================
+      # Get next version
+      # ============================================================
+
+      - name: Get next version
+        id: version
+        shell: pwsh
+        run: |
+          git fetch --tags
+
+          $tags = git tag --list "v1.0.*"
+
+          if (-not $tags) {
+            $patch = 1
+          }
+          else {
+            $patch = ($tags |
+              ForEach-Object {
+                [int]($_ -replace '^v1\.0\.', '')
+              } |
+              Measure-Object -Maximum).Maximum
+
+            $patch++
+          }
+
+          $version = "1.0.$patch"
+          $tag = "v$version"
+
+          Write-Host "Next version: $version"
+          Write-Host "Release tag:  $tag"
+
+          echo "version=$version" >> $env:GITHUB_OUTPUT
+          echo "tag=$tag" >> $env:GITHUB_OUTPUT
+
+      # ============================================================
+      # Update application version
+      # ============================================================
+
+      - name: Update application version
+        shell: pwsh
+        run: |
+          $version = "${{ steps.version.outputs.version }}"
+          $path = "video_downloader.spec"
+
+          $content = Get-Content `
+            $path `
+            -Raw `
+            -Encoding UTF8
+
+          $content = $content -replace `
+            'APP_VERSION = "[^"]+"', `
+            "APP_VERSION = `"$version`""
+
+          Set-Content `
+            $path `
+            $content `
+            -Encoding UTF8
+
+          Write-Host "Application version:"
+          Select-String `
+            -Path $path `
+            -Pattern "APP_VERSION"
+
+      # ============================================================
+      # Build executable
+      # ============================================================
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          pyinstaller `
+            --clean `
+            video_downloader.spec
+
+      # ============================================================
+      # Verify build
+      # ============================================================
+
+      - name: Verify executable
+        shell: pwsh
+        run: |
+          $exe = "dist\video_downloader.exe"
+
+          if (-not (Test-Path $exe)) {
+            throw "Build failed: $exe not found"
+          }
+
+          $size = (Get-Item $exe).Length / 1MB
+
+          Write-Host "Build succeeded."
+          Write-Host "Executable: $exe"
+          Write-Host ("Size: {0:N2} MB" -f $size)
+
+      # ============================================================
+      # Create GitHub Release
+      # ============================================================
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ steps.version.outputs.tag }}
+          target_commitish: main
+          name: v${{ steps.version.outputs.version }}
+          generate_release_notes: true
+          files: |
+            dist/video_downloader.exe
