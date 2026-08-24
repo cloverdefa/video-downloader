@@ -25,11 +25,11 @@ permissions:
 jobs:
   release:
     if: >
-      github.event_name == 'workflow_dispatch' ||
+      github.event.pull_request.merged == true &&
+      github.event.pull_request.base.ref == 'main' &&
       (
-        github.event.pull_request.merged == true &&
-        github.event.pull_request.base.ref == 'main' &&
-        github.event.pull_request.head.ref == 'test'
+        github.event.pull_request.head.ref == 'test' ||
+        github.event.pull_request.head.ref == 'dev'
       )
 
     runs-on: windows-latest
@@ -206,6 +206,11 @@ jobs:
 
           # ----------------------------------------------------------
           # Find latest semantic version tag
+          #
+          # Supported:
+          #   v1.0.0
+          #   v1.1.0
+          #   v2.0.0
           # ----------------------------------------------------------
 
           $latestTag = @(
@@ -256,25 +261,37 @@ jobs:
             Write-Host "Analyzing commits since latest release..."
 
             # --------------------------------------------------------
-            # Get commit messages
+            # Get commits
+            #
+            # Use ASCII Record Separator (0x1E) to separate commits.
+            # This prevents commit body lines from being treated as
+            # independent commits.
             # --------------------------------------------------------
 
             if ($latestTag) {
 
-              $commits = git log `
+              $log = git log `
                 "$latestTag..HEAD" `
-                --pretty=format:"%s%n%b%n---"
+                --pretty=format:"%x1e%s%n%b"
 
             }
             else {
 
-              $commits = git log `
-                --pretty=format:"%s%n%b%n---"
+              $log = git log `
+                --pretty=format:"%x1e%s%n%b"
 
             }
 
+            $commits = $log -split "`x1e" |
+              Where-Object {
+                $_.Trim() -ne ""
+              }
+
             foreach ($commit in $commits) {
 
+              $commit = $commit.Trim()
+
+              Write-Host "----------------------------------------"
               Write-Host "Commit:"
               Write-Host $commit
 
@@ -285,6 +302,7 @@ jobs:
               #   feat!: ...
               #   fix!: ...
               #   refactor!: ...
+              #   feat(scope)!: ...
               #
               # Also:
               #   BREAKING CHANGE:
@@ -301,9 +319,9 @@ jobs:
               # ------------------------------------------------------
               # MINOR
               #
-              # Example:
-              #   feat: add new feature
-              #   feat(scope): add new feature
+              # Examples:
+              #   feat: ...
+              #   feat(scope): ...
               # ------------------------------------------------------
 
               if ($commit -match '^feat(\([^)]*\))?:') {
@@ -318,9 +336,9 @@ jobs:
               # ------------------------------------------------------
               # PATCH
               #
-              # Example:
-              #   fix: correct download error
-              #   fix(scope): correct download error
+              # Examples:
+              #   fix: ...
+              #   fix(scope): ...
               # ------------------------------------------------------
 
               if ($commit -match '^fix(\([^)]*\))?:') {
@@ -333,6 +351,7 @@ jobs:
               }
             }
 
+            Write-Host "----------------------------------------"
             Write-Host "Detected release type: $releaseType"
 
             # --------------------------------------------------------
@@ -433,6 +452,10 @@ jobs:
           Write-Host "Next version: $version"
           Write-Host "Release tag: $tag"
 
+          # ----------------------------------------------------------
+          # GitHub Actions outputs
+          # ----------------------------------------------------------
+
           "should_release=true" |
             Out-File `
               -FilePath $env:GITHUB_OUTPUT `
@@ -500,7 +523,7 @@ jobs:
             video_downloader.spec
 
       # ============================================================
-      # Verify build
+      # Verify executable
       # ============================================================
 
       - name: Verify executable
