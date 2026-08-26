@@ -110,7 +110,7 @@ yt_dlp_path = find_tool("yt-dlp")
 ffmpeg_path = find_tool("ffmpeg", required_mb=_SHIM_THRESHOLD_MB)
 deno_path = find_tool("deno", required_mb=_SHIM_THRESHOLD_MB)
 
-APP_VERSION = "2026.08.20-Fix.1"
+APP_VERSION = os.environ.get("APP_VERSION", "DEV")
 YTDLP_VERSION = (
     get_tool_version(yt_dlp_path, "yt-dlp")
     if yt_dlp_path
@@ -252,15 +252,3 @@ except Exception as e:
         f"(ignored): {e}"
     )
 
-
-# build/ 資料夾為 PyInstaller 的中間產物
-build_dir = Path("build")
-
-try:
-    shutil.rmtree(build_dir)
-    print(f"[spec] build directory removed: {build_dir}")
-except Exception as e:
-    print(
-        f"[spec] failed to remove build directory "
-        f"(ignored): {e}"
-    )
