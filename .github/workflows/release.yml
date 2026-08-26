@@ -25,11 +25,17 @@ permissions:
 jobs:
   release:
     if: >
-      github.event.pull_request.merged == true &&
-      github.event.pull_request.base.ref == 'main' &&
       (
-        github.event.pull_request.head.ref == 'test' ||
-        github.event.pull_request.head.ref == 'dev'
+        github.event_name == 'workflow_dispatch'
+      ) ||
+      (
+        github.event_name == 'pull_request' &&
+        github.event.pull_request.merged == true &&
+        github.event.pull_request.base.ref == 'main' &&
+        (
+          github.event.pull_request.head.ref == 'test' ||
+          github.event.pull_request.head.ref == 'dev'
+        )
       )
 
     runs-on: windows-latest
@@ -480,46 +486,20 @@ jobs:
               -Encoding utf8
 
       # ============================================================
-      # Update application version
-      # ============================================================
-
-      - name: Update application version
-        if: steps.version.outputs.should_release == 'true'
-        shell: pwsh
-        run: |
-          $version = "${{ steps.version.outputs.version }}"
-          $path = "video_downloader.spec"
-
-          $content = Get-Content `
-            $path `
-            -Raw `
-            -Encoding UTF8
-
-          $content = $content -replace `
-            'APP_VERSION = "[^"]+"', `
-            "APP_VERSION = `"$version`""
-
-          Set-Content `
-            $path `
-            $content `
-            -Encoding UTF8
-
-          Write-Host "Application version:"
-          Select-String `
-            -Path $path `
-            -Pattern "APP_VERSION"
-
-      # ============================================================
       # Build executable
       # ============================================================
-
+      
       - name: Build executable
         if: steps.version.outputs.should_release == 'true'
         shell: pwsh
         run: |
+          $env:APP_VERSION = "${{ steps.version.outputs.version }}"
+      
+          Write-Host "Application version: $env:APP_VERSION"
+      
           pyinstaller `
             --clean `
-            video_downloader.spec
+            video_downloader.spec              
 
       # ============================================================
       # Verify executable
