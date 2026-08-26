@@ -32,5 +32,5 @@ jobs:
           gh pr merge "$PR_URL" \
             --repo "${{ github.repository }}" \
             --admin \
-            --squash
-
+            --squash \
+            --delete-branch
