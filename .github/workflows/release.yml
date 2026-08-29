@@ -32,10 +32,7 @@ jobs:
         github.event_name == 'pull_request' &&
         github.event.pull_request.merged == true &&
         github.event.pull_request.base.ref == 'main' &&
-        (
-          github.event.pull_request.head.ref == 'test' ||
-          github.event.pull_request.head.ref == 'dev'
-        )
+        github.event.pull_request.head.ref == 'test'
       )
 
     runs-on: windows-latest
@@ -46,7 +43,7 @@ jobs:
       # ============================================================
 
       - name: Checkout main
-        uses: actions/checkout@v4
+        uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
@@ -211,11 +208,6 @@ jobs:
 
           # ----------------------------------------------------------
           # Find latest semantic version tag
-          #
-          # Supported:
-          #   v1.0.0
-          #   v1.1.0
-          #   v2.0.0
           # ----------------------------------------------------------
 
           $latestTag = @(
@@ -239,15 +231,6 @@ jobs:
 
           # ----------------------------------------------------------
           # Determine release type
-          #
-          # workflow_dispatch:
-          #   Use manually selected release type.
-          #
-          # pull_request:
-          #   Analyze commits since latest release.
-          #
-          # Priority:
-          #   major > minor > patch > none
           # ----------------------------------------------------------
 
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
@@ -264,14 +247,6 @@ jobs:
 
             Write-Host "Trigger: pull_request"
             Write-Host "Analyzing commits since latest release..."
-
-            # --------------------------------------------------------
-            # Get commits
-            #
-            # Use ASCII Record Separator (0x1E) to separate commits.
-            # This prevents commit body lines from being treated as
-            # independent commits.
-            # --------------------------------------------------------
 
             if ($latestTag) {
 
@@ -300,19 +275,7 @@ jobs:
               Write-Host "Commit:"
               Write-Host $commit
 
-              # ------------------------------------------------------
               # MAJOR
-              #
-              # Examples:
-              #   feat!: ...
-              #   fix!: ...
-              #   refactor!: ...
-              #   feat(scope)!: ...
-              #
-              # Also:
-              #   BREAKING CHANGE:
-              # ------------------------------------------------------
-
               if (
                 $commit -match '^[a-zA-Z0-9_-]+(\([^)]*\))?!:' -or
                 $commit -match 'BREAKING CHANGE:'
@@ -321,14 +284,7 @@ jobs:
                 continue
               }
 
-              # ------------------------------------------------------
               # MINOR
-              #
-              # Examples:
-              #   feat: ...
-              #   feat(scope): ...
-              # ------------------------------------------------------
-
               if ($commit -match '^feat(\([^)]*\))?:') {
 
                 if ($releaseType -ne "major") {
@@ -338,14 +294,7 @@ jobs:
                 continue
               }
 
-              # ------------------------------------------------------
               # PATCH
-              #
-              # Examples:
-              #   fix: ...
-              #   fix(scope): ...
-              # ------------------------------------------------------
-
               if ($commit -match '^fix(\([^)]*\))?:') {
 
                 if ($releaseType -eq "none") {
@@ -358,10 +307,6 @@ jobs:
 
             Write-Host "----------------------------------------"
             Write-Host "Detected release type: $releaseType"
-
-            # --------------------------------------------------------
-            # No release required
-            # --------------------------------------------------------
 
             if ($releaseType -eq "none") {
 
@@ -488,18 +433,18 @@ jobs:
       # ============================================================
       # Build executable
       # ============================================================
-      
+
       - name: Build executable
         if: steps.version.outputs.should_release == 'true'
         shell: pwsh
         run: |
           $env:APP_VERSION = "${{ steps.version.outputs.version }}"
-      
+
           Write-Host "Application version: $env:APP_VERSION"
-      
+
           pyinstaller `
             --clean `
-            video_downloader.spec              
+            video_downloader.spec
 
       # ============================================================
       # Verify executable
