@@ -23,12 +23,12 @@ permissions:
   contents: write
 
 jobs:
-  release:
-    # ==============================================================
-    # 僅允許：
-    # 1. 手動觸發 (workflow_dispatch)
-    # 2. PR 被成功合併，且來源分支為 'test'、目標分支為 'main'
-    # ==============================================================
+  # ==================================================================
+  # Job 1: 判斷版本號
+  # ==================================================================
+  version:
+    name: Determine Version
+
     if: >
       github.event_name == 'workflow_dispatch' ||
       (
@@ -37,168 +37,20 @@ jobs:
         github.event.pull_request.head.ref == 'test'
       )
 
-    runs-on: windows-latest
+    runs-on: ubuntu-latest
+
+    outputs:
+      should_release: ${{ steps.version.outputs.should_release }}
+      release_type: ${{ steps.version.outputs.release_type }}
+      version: ${{ steps.version.outputs.version }}
+      tag: ${{ steps.version.outputs.tag }}
 
     steps:
-      # ============================================================
-      # Checkout
-      # ============================================================
-
       - name: Checkout main
         uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
-
-      # ============================================================
-      # Setup Python
-      # ============================================================
-
-      - name: Setup Python
-        uses: actions/setup-python@v7
-        with:
-          python-version: "3.x"
-
-      # ============================================================
-      # Install Python dependencies
-      # ============================================================
-
-      - name: Install dependencies
-        shell: pwsh
-        run: |
-          python -m pip install --upgrade pip
-          python -m pip install pyinstaller
-
-      # ============================================================
-      # Install yt-dlp
-      # ============================================================
-
-      - name: Install yt-dlp
-        shell: pwsh
-        run: |
-          $bin = "$env:GITHUB_WORKSPACE\bin"
-
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $bin | Out-Null
-
-          $url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile "$bin\yt-dlp.exe"
-
-          Add-Content `
-            $env:GITHUB_PATH `
-            $bin
-
-          Write-Host "yt-dlp version:"
-          & "$bin\yt-dlp.exe" --version
-
-      # ============================================================
-      # Install FFmpeg
-      # ============================================================
-
-      - name: Install FFmpeg
-        shell: pwsh
-        run: |
-          $bin = "$env:GITHUB_WORKSPACE\bin"
-          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
-          $extract = "$env:RUNNER_TEMP\ffmpeg"
-
-          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $zip
-
-          Expand-Archive `
-            -Path $zip `
-            -DestinationPath $extract `
-            -Force
-
-          $ffmpeg = Get-ChildItem `
-            -Path $extract `
-            -Filter "ffmpeg.exe" `
-            -Recurse |
-            Select-Object -First 1
-
-          if (-not $ffmpeg) {
-            throw "ffmpeg.exe not found"
-          }
-
-          Copy-Item `
-            $ffmpeg.FullName `
-            "$bin\ffmpeg.exe" `
-            -Force
-
-          Write-Host "FFmpeg version:"
-          & "$bin\ffmpeg.exe" -version |
-            Select-Object -First 1
-
-      # ============================================================
-      # Install Deno
-      # ============================================================
-
-      - name: Install Deno
-        shell: pwsh
-        run: |
-          $bin = "$env:GITHUB_WORKSPACE\bin"
-          $zip = "$env:RUNNER_TEMP\deno.zip"
-          $extract = "$env:RUNNER_TEMP\deno"
-
-          $url = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $zip
-
-          Expand-Archive `
-            -Path $zip `
-            -DestinationPath $extract `
-            -Force
-
-          if (-not (Test-Path "$extract\deno.exe")) {
-            throw "deno.exe not found"
-          }
-
-          Copy-Item `
-            "$extract\deno.exe" `
-            "$bin\deno.exe" `
-            -Force
-
-          Write-Host "Deno version:"
-          & "$bin\deno.exe" --version
-
-      # ============================================================
-      # Verify build dependencies
-      # ============================================================
-
-      - name: Verify dependencies
-        shell: pwsh
-        run: |
-          Write-Host "=============================="
-          Write-Host "yt-dlp"
-          Write-Host "=============================="
-          yt-dlp --version
-
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "FFmpeg"
-          Write-Host "=============================="
-          ffmpeg -version |
-            Select-Object -First 1
-
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "Deno"
-          Write-Host "=============================="
-          deno --version
-
-      # ============================================================
-      # Get next version
-      # ============================================================
 
       - name: Get next version
         id: version
@@ -432,15 +284,151 @@ jobs:
               -Append `
               -Encoding utf8
 
-      # ============================================================
-      # Build executable
-      # ============================================================
+  # ==================================================================
+  # Job 2: 建置執行檔
+  # ==================================================================
+  build:
+    name: Build Executable
 
-      - name: Build executable
-        if: steps.version.outputs.should_release == 'true'
+    needs: version
+
+    if: needs.version.outputs.should_release == 'true'
+
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout main
+        uses: actions/checkout@v7
+        with:
+          ref: main
+          fetch-depth: 0
+
+      - name: Setup Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.x"
+
+      - name: Install dependencies
         shell: pwsh
         run: |
-          $env:APP_VERSION = "${{ steps.version.outputs.version }}"
+          python -m pip install --upgrade pip
+          python -m pip install pyinstaller
+
+      - name: Install yt-dlp
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\bin"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $bin | Out-Null
+
+          $url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile "$bin\yt-dlp.exe"
+
+          Add-Content `
+            $env:GITHUB_PATH `
+            $bin
+
+          Write-Host "yt-dlp version:"
+          & "$bin\yt-dlp.exe" --version
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\bin"
+          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          $extract = "$env:RUNNER_TEMP\ffmpeg"
+
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $zip
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath $extract `
+            -Force
+
+          $ffmpeg = Get-ChildItem `
+            -Path $extract `
+            -Filter "ffmpeg.exe" `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $ffmpeg) {
+            throw "ffmpeg.exe not found"
+          }
+
+          Copy-Item `
+            $ffmpeg.FullName `
+            "$bin\ffmpeg.exe" `
+            -Force
+
+          Write-Host "FFmpeg version:"
+          & "$bin\ffmpeg.exe" -version |
+            Select-Object -First 1
+
+      - name: Install Deno
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\bin"
+          $zip = "$env:RUNNER_TEMP\deno.zip"
+          $extract = "$env:RUNNER_TEMP\deno"
+
+          $url = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $zip
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath $extract `
+            -Force
+
+          if (-not (Test-Path "$extract\deno.exe")) {
+            throw "deno.exe not found"
+          }
+
+          Copy-Item `
+            "$extract\deno.exe" `
+            "$bin\deno.exe" `
+            -Force
+
+          Write-Host "Deno version:"
+          & "$bin\deno.exe" --version
+
+      - name: Verify dependencies
+        shell: pwsh
+        run: |
+          Write-Host "=============================="
+          Write-Host "yt-dlp"
+          Write-Host "=============================="
+          yt-dlp --version
+
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "FFmpeg"
+          Write-Host "=============================="
+          ffmpeg -version |
+            Select-Object -First 1
+
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "Deno"
+          Write-Host "=============================="
+          deno --version
+
+      - name: Build executable
+        shell: pwsh
+        run: |
+          $env:APP_VERSION = "${{ needs.version.outputs.version }}"
 
           Write-Host "Application version: $env:APP_VERSION"
 
@@ -448,12 +436,7 @@ jobs:
             --clean `
             video_downloader.spec
 
-      # ============================================================
-      # Verify executable
-      # ============================================================
-
       - name: Verify executable
-        if: steps.version.outputs.should_release == 'true'
         shell: pwsh
         run: |
           $exe = "dist\video_downloader.exe"
@@ -468,17 +451,40 @@ jobs:
           Write-Host "Executable: $exe"
           Write-Host ("Size: {0:N2} MB" -f $size)
 
-      # ============================================================
-      # Create GitHub Release
-      # ============================================================
+      - name: Upload executable artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: video_downloader
+          path: dist/video_downloader.exe
+          retention-days: 1
+
+  # ==================================================================
+  # Job 3: 建立 GitHub Release
+  # ==================================================================
+  release:
+    name: Create Release
+
+    needs:
+      - version
+      - build
+
+    if: needs.version.outputs.should_release == 'true'
+
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Download executable artifact
+        uses: actions/download-artifact@v8
+        with:
+          name: video_downloader
+          path: dist
 
       - name: Create Release
-        if: steps.version.outputs.should_release == 'true'
         uses: softprops/action-gh-release@v3
         with:
-          tag_name: ${{ steps.version.outputs.tag }}
+          tag_name: ${{ needs.version.outputs.tag }}
           target_commitish: main
-          name: ${{ steps.version.outputs.tag }}
+          name: ${{ needs.version.outputs.tag }}
           generate_release_notes: true
           files: |
             dist/video_downloader.exe
