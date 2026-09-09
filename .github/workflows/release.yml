@@ -54,7 +54,7 @@ jobs:
       # ============================================================
       # Checkout main
       # ============================================================
-
+      
       - name: Checkout main
         uses: actions/checkout@v7
         with:
@@ -358,7 +358,118 @@ jobs:
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller py7zr
+          python -m pip install pyinstaller
+
+      - name: Install yt-dlp
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\bin"
+
+          New-Item `
+            -ItemType Directory `
+            -Force `
+            -Path $bin | Out-Null
+
+          $url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile "$bin\yt-dlp.exe"
+
+          Add-Content `
+            $env:GITHUB_PATH `
+            $bin
+
+          Write-Host "yt-dlp version:"
+          & "$bin\yt-dlp.exe" --version
+
+      - name: Install FFmpeg
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\bin"
+          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
+          $extract = "$env:RUNNER_TEMP\ffmpeg"
+
+          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $zip
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath $extract `
+            -Force
+
+          $ffmpeg = Get-ChildItem `
+            -Path $extract `
+            -Filter "ffmpeg.exe" `
+            -Recurse |
+            Select-Object -First 1
+
+          if (-not $ffmpeg) {
+            throw "ffmpeg.exe not found"
+          }
+
+          Copy-Item `
+            $ffmpeg.FullName `
+            "$bin\ffmpeg.exe" `
+            -Force
+
+          Write-Host "FFmpeg version:"
+          & "$bin\ffmpeg.exe" -version |
+            Select-Object -First 1
+
+      - name: Install Deno
+        shell: pwsh
+        run: |
+          $bin = "$env:GITHUB_WORKSPACE\bin"
+          $zip = "$env:RUNNER_TEMP\deno.zip"
+          $extract = "$env:RUNNER_TEMP\deno"
+
+          $url = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
+
+          Invoke-WebRequest `
+            -Uri $url `
+            -OutFile $zip
+
+          Expand-Archive `
+            -Path $zip `
+            -DestinationPath $extract `
+            -Force
+
+          if (-not (Test-Path "$extract\deno.exe")) {
+            throw "deno.exe not found"
+          }
+
+          Copy-Item `
+            "$extract\deno.exe" `
+            "$bin\deno.exe" `
+            -Force
+
+          Write-Host "Deno version:"
+          & "$bin\deno.exe" --version
+
+      - name: Verify dependencies
+        shell: pwsh
+        run: |
+          Write-Host "=============================="
+          Write-Host "yt-dlp"
+          Write-Host "=============================="
+          yt-dlp --version
+
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "FFmpeg"
+          Write-Host "=============================="
+          ffmpeg -version |
+            Select-Object -First 1
+
+          Write-Host ""
+          Write-Host "=============================="
+          Write-Host "Deno"
+          Write-Host "=============================="
+          deno --version
 
       # ============================================================
       # Build executable
@@ -367,7 +478,13 @@ jobs:
       - name: Build executable
         shell: pwsh
         run: |
-          pyinstaller webm2gif.spec
+          $env:APP_VERSION = "${{ needs.version.outputs.version }}"
+
+          Write-Host "Application version: $env:APP_VERSION"
+
+          pyinstaller `
+            --clean `
+            video_downloader.spec
 
       # ============================================================
       # Verify executable
@@ -393,9 +510,9 @@ jobs:
       # ============================================================
 
       - name: Upload executable artifact
-        uses: actions/upload-artifact@v7
+        uses: actions/upload-artifact@v4
         with:
-          name: webm2gif
+          name: video_downloader
           path: dist/video_downloader.exe
           retention-days: 1
 
@@ -421,7 +538,7 @@ jobs:
       - name: Download executable artifact
         uses: actions/download-artifact@v8
         with:
-          name: webm2gif
+          name: video_downloader
           path: dist
 
       # ============================================================
@@ -437,4 +554,5 @@ jobs:
           generate_release_notes: true
           files: |
             dist/video_downloader.exe
+
 
