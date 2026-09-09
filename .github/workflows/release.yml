@@ -150,7 +150,8 @@ jobs:
               }
 
               # PATCH
-              if ($commit -match '^(fix|修正|修復)(\([^)]*\))?[:：]') {
+              if ($commit -match '^(fix|修正|修復)(\([^)]*\))?[:：]' -or
+                  $commit -match '^chore\(release\)[:：]') {
 
                 if ($releaseType -eq "none") {
                   $releaseType = "patch"
