@@ -132,14 +132,15 @@ jobs:
               # MAJOR
               if (
                 $commit -match '^[a-zA-Z0-9_-]+(\([^)]*\))?!:' -or
-                $commit -match 'BREAKING CHANGE:'
+                $commit -match 'BREAKING CHANGE:' -or
+                $commit -match '(重大變更|破壞性變更)[:：]'
               ) {
                 $releaseType = "major"
                 continue
               }
 
               # MINOR
-              if ($commit -match '^feat(\([^)]*\))?:') {
+              if ($commit -match '^(feat|新增|功能)(\([^)]*\))?[:：]') {
 
                 if ($releaseType -ne "major") {
                   $releaseType = "minor"
@@ -149,7 +150,7 @@ jobs:
               }
 
               # PATCH
-              if ($commit -match '^fix(\([^)]*\))?:') {
+              if ($commit -match '^(fix|修正|修復)(\([^)]*\))?[:：]') {
 
                 if ($releaseType -eq "none") {
                   $releaseType = "patch"
@@ -474,7 +475,7 @@ jobs:
 
     steps:
       - name: Download executable artifact
-        uses: actions/download-artifact@v8
+        uses: actions/download-artifact@v4
         with:
           name: video_downloader
           path: dist
@@ -488,3 +489,5 @@ jobs:
           generate_release_notes: true
           files: |
             dist/video_downloader.exe
+
+
