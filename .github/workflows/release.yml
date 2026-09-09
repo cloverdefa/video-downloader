@@ -29,6 +29,11 @@ jobs:
   version:
     name: Determine Version
 
+    # ==============================================================
+    # 僅允許：
+    # 1. 手動觸發 (workflow_dispatch)
+    # 2. PR 被成功合併，且來源分支為 'test'、目標分支為 'main'
+    # ==============================================================
     if: >
       github.event_name == 'workflow_dispatch' ||
       (
@@ -46,11 +51,19 @@ jobs:
       tag: ${{ steps.version.outputs.tag }}
 
     steps:
+      # ============================================================
+      # Checkout main
+      # ============================================================
+
       - name: Checkout main
         uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
+
+      # ============================================================
+      # Get next version
+      # ============================================================
 
       - name: Get next version
         id: version
@@ -62,6 +75,11 @@ jobs:
 
           # ----------------------------------------------------------
           # Find latest semantic version tag
+          #
+          # Supported:
+          #   v1.0.0
+          #   v1.1.0
+          #   v2.0.0
           # ----------------------------------------------------------
 
           $latestTag = @(
@@ -85,6 +103,15 @@ jobs:
 
           # ----------------------------------------------------------
           # Determine release type
+          #
+          # workflow_dispatch:
+          #   Use manually selected release type.
+          #
+          # pull_request:
+          #   Analyze commits since latest release.
+          #
+          # Priority:
+          #   major > minor > patch > none
           # ----------------------------------------------------------
 
           if ("${{ github.event_name }}" -eq "workflow_dispatch") {
@@ -101,6 +128,14 @@ jobs:
 
             Write-Host "Trigger: pull_request"
             Write-Host "Analyzing commits since latest release..."
+
+            # --------------------------------------------------------
+            # Get commits
+            #
+            # Use ASCII Record Separator (0x1E) to separate commits.
+            # This prevents commit body lines from being treated as
+            # independent commits.
+            # --------------------------------------------------------
 
             if ($latestTag) {
 
@@ -123,7 +158,7 @@ jobs:
 
             foreach ($commit in $commits) {
 
-              $commit = $commit.Trim()
+              $commit = $commit.Trim() -replace '^[\x1E]+', ''
 
               Write-Host "----------------------------------------"
               Write-Host "Commit:"
@@ -141,28 +176,27 @@ jobs:
 
               # MINOR
               if ($commit -match '^(feat|新增|功能)(\([^)]*\))?[:：]') {
-
                 if ($releaseType -ne "major") {
                   $releaseType = "minor"
                 }
-
                 continue
               }
 
               # PATCH
-              if ($commit -match '^(fix|修正|修復)(\([^)]*\))?[:：]' -or
-                  $commit -match '^chore\(release\)[:：]') {
-
+              if ($commit -match '^(fix|chore|修正|修復)(\([^)]*\))?[:：]') {
                 if ($releaseType -eq "none") {
                   $releaseType = "patch"
                 }
-
                 continue
               }
             }
 
             Write-Host "----------------------------------------"
             Write-Host "Detected release type: $releaseType"
+
+            # --------------------------------------------------------
+            # No release required
+            # --------------------------------------------------------
 
             if ($releaseType -eq "none") {
 
@@ -248,9 +282,7 @@ jobs:
           # Prevent duplicate tag
           # ----------------------------------------------------------
 
-          $existingTag = git tag --list $tag
-
-          if ($existingTag) {
+          if (git tag --list $tag) {
             throw "Tag $tag already exists."
           }
 
@@ -299,144 +331,47 @@ jobs:
     runs-on: windows-latest
 
     steps:
+      # ============================================================
+      # Checkout main
+      # ============================================================
+
       - name: Checkout main
         uses: actions/checkout@v7
         with:
           ref: main
           fetch-depth: 0
 
+      # ============================================================
+      # Setup Python
+      # ============================================================
+
       - name: Setup Python
         uses: actions/setup-python@v7
         with:
           python-version: "3.x"
 
+      # ============================================================
+      # Install dependencies
+      # ============================================================
+
       - name: Install dependencies
         shell: pwsh
         run: |
           python -m pip install --upgrade pip
-          python -m pip install pyinstaller
+          python -m pip install pyinstaller py7zr
 
-      - name: Install yt-dlp
-        shell: pwsh
-        run: |
-          $bin = "$env:GITHUB_WORKSPACE\bin"
-
-          New-Item `
-            -ItemType Directory `
-            -Force `
-            -Path $bin | Out-Null
-
-          $url = "https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp.exe"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile "$bin\yt-dlp.exe"
-
-          Add-Content `
-            $env:GITHUB_PATH `
-            $bin
-
-          Write-Host "yt-dlp version:"
-          & "$bin\yt-dlp.exe" --version
-
-      - name: Install FFmpeg
-        shell: pwsh
-        run: |
-          $bin = "$env:GITHUB_WORKSPACE\bin"
-          $zip = "$env:RUNNER_TEMP\ffmpeg.zip"
-          $extract = "$env:RUNNER_TEMP\ffmpeg"
-
-          $url = "https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $zip
-
-          Expand-Archive `
-            -Path $zip `
-            -DestinationPath $extract `
-            -Force
-
-          $ffmpeg = Get-ChildItem `
-            -Path $extract `
-            -Filter "ffmpeg.exe" `
-            -Recurse |
-            Select-Object -First 1
-
-          if (-not $ffmpeg) {
-            throw "ffmpeg.exe not found"
-          }
-
-          Copy-Item `
-            $ffmpeg.FullName `
-            "$bin\ffmpeg.exe" `
-            -Force
-
-          Write-Host "FFmpeg version:"
-          & "$bin\ffmpeg.exe" -version |
-            Select-Object -First 1
-
-      - name: Install Deno
-        shell: pwsh
-        run: |
-          $bin = "$env:GITHUB_WORKSPACE\bin"
-          $zip = "$env:RUNNER_TEMP\deno.zip"
-          $extract = "$env:RUNNER_TEMP\deno"
-
-          $url = "https://github.com/denoland/deno/releases/latest/download/deno-x86_64-pc-windows-msvc.zip"
-
-          Invoke-WebRequest `
-            -Uri $url `
-            -OutFile $zip
-
-          Expand-Archive `
-            -Path $zip `
-            -DestinationPath $extract `
-            -Force
-
-          if (-not (Test-Path "$extract\deno.exe")) {
-            throw "deno.exe not found"
-          }
-
-          Copy-Item `
-            "$extract\deno.exe" `
-            "$bin\deno.exe" `
-            -Force
-
-          Write-Host "Deno version:"
-          & "$bin\deno.exe" --version
-
-      - name: Verify dependencies
-        shell: pwsh
-        run: |
-          Write-Host "=============================="
-          Write-Host "yt-dlp"
-          Write-Host "=============================="
-          yt-dlp --version
-
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "FFmpeg"
-          Write-Host "=============================="
-          ffmpeg -version |
-            Select-Object -First 1
-
-          Write-Host ""
-          Write-Host "=============================="
-          Write-Host "Deno"
-          Write-Host "=============================="
-          deno --version
+      # ============================================================
+      # Build executable
+      # ============================================================
 
       - name: Build executable
         shell: pwsh
         run: |
-          $env:APP_VERSION = "${{ needs.version.outputs.version }}"
+          pyinstaller webm2gif.spec
 
-          Write-Host "Application version: $env:APP_VERSION"
-
-          pyinstaller `
-            --clean `
-            video_downloader.spec
+      # ============================================================
+      # Verify executable
+      # ============================================================
 
       - name: Verify executable
         shell: pwsh
@@ -453,10 +388,14 @@ jobs:
           Write-Host "Executable: $exe"
           Write-Host ("Size: {0:N2} MB" -f $size)
 
+      # ============================================================
+      # Upload executable artifact
+      # ============================================================
+
       - name: Upload executable artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
-          name: video_downloader
+          name: webm2gif
           path: dist/video_downloader.exe
           retention-days: 1
 
@@ -475,11 +414,19 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
+      # ============================================================
+      # Download executable artifact
+      # ============================================================
+
       - name: Download executable artifact
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@v8
         with:
-          name: video_downloader
+          name: webm2gif
           path: dist
+
+      # ============================================================
+      # Create GitHub Release
+      # ============================================================
 
       - name: Create Release
         uses: softprops/action-gh-release@v3
@@ -490,5 +437,4 @@ jobs:
           generate_release_notes: true
           files: |
             dist/video_downloader.exe
-
 
