@@ -5,25 +5,15 @@
 ─────────────────────────────────────────────────────────────
 簡易 GUI 影片下載器 (yt-dlp + ffmpeg)
 
-重構重點：
-  - PyInstaller EXE 支援 Windows Per-Monitor DPI Awareness V2
-  - 視窗可自由拖動尺寸
-  - Responsive GUI Layout
-  - 視窗變寬時，輸入區 / 影片名稱 / 進度條自動延伸
-  - 視窗變高時，主要內容區自動延伸
-  - 不使用固定視窗尺寸
-  - 左右控制區使用 Grid 配置
-  - 影片名稱 wraplength 會依視窗寬度動態調整
-  - 移除未使用的 deno 強制依賴
-  - 修正 subprocess cwd 指向 output_dir
-  - 統一 UI 狀態管理
-  - 下載完成後可以再次下載
-  - pathlib 處理路徑
-  - 錯誤訊息顯示最後 N 行 stderr
-  - 網址輸入列支援滑鼠右鍵貼上選單
-  - deno 為選擇性依賴
-  - 下載時顯示影片名稱
-  - 版本資訊從 sys 屬性讀取
+外觀重構重點（v2 現代化風格）：
+  - 全新配色：深色系 + 單一強調色，對比更柔和
+  - 卡片式版面，使用 Canvas 繪製圓角矩形取代方形 Frame
+  - 自訂圓角按鈕元件（RoundedButton），含 hover / disabled 狀態
+  - 自訂圓角進度條（RoundedProgressBar），取代 ttk 預設樣式
+  - 網址輸入框改為「圓角容器 + 無邊框 Entry」，focus 時邊框變色
+  - 卡片加上細微陰影（雙層圓角矩形模擬 elevation）
+  - 版本徽章、狀態列改為圓角膠囊樣式
+  - 其餘下載邏輯 / 執行緒 / 事件流程與前版完全相同，僅重繪 UI 層
 ─────────────────────────────────────────────────────────────
 """
 
@@ -164,33 +154,38 @@ def t(key: str) -> str:
 # ═════════════════════════════════════════════════════════════
 
 
-DEFAULT_WIDTH = 520
-DEFAULT_HEIGHT = 400
+DEFAULT_WIDTH = 560
+DEFAULT_HEIGHT = 460
 
-MIN_WIDTH = 420
-MIN_HEIGHT = 360
+MIN_WIDTH = 460
+MIN_HEIGHT = 420
 
 
 # ═════════════════════════════════════════════════════════════
-# 色彩
+# 色彩（現代深色主題）
 # ═════════════════════════════════════════════════════════════
 
 
-COLOR_BG = "#1e1e2e"
-COLOR_SURFACE = "#2a2a3e"
-COLOR_SURFACE_ALT = "#323248"
+COLOR_BG = "#0b0b10"
+COLOR_SURFACE = "#16161d"
+COLOR_SURFACE_ALT = "#1e1e27"
+COLOR_SHADOW = "#000000"
 
-COLOR_ACCENT = "#7c6af7"
-COLOR_ACCENT_DIM = "#5a4ec4"
+COLOR_ACCENT = "#7c6aff"
+COLOR_ACCENT_HOVER = "#9384ff"
+COLOR_ACCENT_DIM = "#5a4ed6"
+COLOR_ACCENT_SOFT = "#241f3d"
 
-COLOR_SUCCESS = "#3ddba0"
-COLOR_WARNING = "#f0a04a"
-COLOR_DANGER = "#f06c6c"
+COLOR_SUCCESS = "#34d399"
+COLOR_WARNING = "#fbbf24"
+COLOR_DANGER = "#f87171"
 
-COLOR_TEXT = "#e8e8f0"
-COLOR_TEXT_DIM = "#888899"
+COLOR_TEXT = "#f2f2f6"
+COLOR_TEXT_DIM = "#93939f"
+COLOR_TEXT_MUTED = "#5c5c68"
 
-COLOR_BORDER = "#3a3a52"
+COLOR_BORDER = "#26262f"
+COLOR_BORDER_FOCUS = COLOR_ACCENT
 
 
 # ═════════════════════════════════════════════════════════════
@@ -205,13 +200,25 @@ FONT_UI = (
 
 FONT_TITLE = (
     "Microsoft JhengHei UI",
-    13,
+    14,
     "bold",
 )
 
 FONT_SMALL = (
     "Microsoft JhengHei UI",
     9,
+)
+
+FONT_BUTTON = (
+    "Microsoft JhengHei UI",
+    10,
+    "bold",
+)
+
+FONT_LABEL = (
+    "Microsoft JhengHei UI",
+    9,
+    "bold",
 )
 
 
@@ -425,6 +432,467 @@ def parse_title(
 
 
 # ═════════════════════════════════════════════════════════════
+# 共用：圓角繪製工具
+# ═════════════════════════════════════════════════════════════
+
+
+def _rounded_rect_points(
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    radius: float,
+) -> list[float]:
+    """
+    產生圓角矩形的多邊形頂點，搭配 smooth=True
+    可畫出視覺上平滑的圓角。
+    """
+
+    radius = max(
+        0,
+        min(
+            radius,
+            (x2 - x1) / 2,
+            (y2 - y1) / 2,
+        ),
+    )
+
+    return [
+        x1 + radius, y1,
+        x2 - radius, y1,
+        x2, y1,
+        x2, y1 + radius,
+        x2, y2 - radius,
+        x2, y2,
+        x2 - radius, y2,
+        x1 + radius, y2,
+        x1, y2,
+        x1, y2 - radius,
+        x1, y1 + radius,
+        x1, y1,
+    ]
+
+
+def draw_rounded_rect(
+    canvas: tk.Canvas,
+    x1: float,
+    y1: float,
+    x2: float,
+    y2: float,
+    radius: float,
+    **kwargs,
+) -> int:
+
+    points = _rounded_rect_points(
+        x1, y1, x2, y2, radius
+    )
+
+    return canvas.create_polygon(
+        points,
+        smooth=True,
+        **kwargs,
+    )
+
+
+# ═════════════════════════════════════════════════════════════
+# 元件：圓角卡片（可帶淡陰影）
+# ═════════════════════════════════════════════════════════════
+
+
+class RoundedCard(tk.Canvas):
+    """
+    以 Canvas 模擬圓角卡片，內容用 create_window 放置一個
+    一般 tk.Frame，方便沿用既有的 grid / pack 佈局方式。
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        bg_color: str = COLOR_SURFACE,
+        border_color: str = COLOR_BORDER,
+        radius: int = 14,
+        shadow: bool = True,
+        **kwargs,
+    ) -> None:
+
+        super().__init__(
+            parent,
+            bg=parent["bg"] if "bg" in parent.keys() else COLOR_BG,
+            highlightthickness=0,
+            bd=0,
+            **kwargs,
+        )
+
+        self._bg_color = bg_color
+        self._border_color = border_color
+        self._radius = radius
+        self._shadow = shadow
+
+        self.inner = tk.Frame(
+            self,
+            bg=bg_color,
+        )
+
+        self.bind(
+            "<Configure>",
+            self._redraw,
+        )
+
+    def _redraw(
+        self,
+        event: tk.Event | None = None,
+    ) -> None:
+
+        self.delete("all")
+
+        width = self.winfo_width()
+        height = self.winfo_height()
+
+        if width < 4 or height < 4:
+            return
+
+        pad = 2
+
+        if self._shadow:
+            draw_rounded_rect(
+                self,
+                pad,
+                pad + 3,
+                width - pad,
+                height - pad + 1,
+                self._radius,
+                fill=COLOR_SHADOW,
+                outline="",
+                stipple="gray25",
+            )
+
+        draw_rounded_rect(
+            self,
+            pad,
+            pad,
+            width - pad,
+            height - pad - (3 if self._shadow else 0),
+            self._radius,
+            fill=self._bg_color,
+            outline=self._border_color,
+            width=1,
+        )
+
+        self.create_window(
+            pad + 1,
+            pad + 1,
+            anchor="nw",
+            window=self.inner,
+            width=width - 2 * pad - 2,
+            height=height - 2 * pad - 2 - (3 if self._shadow else 0),
+        )
+
+    def set_border_color(self, color: str) -> None:
+        self._border_color = color
+        self._redraw()
+
+
+# ═════════════════════════════════════════════════════════════
+# 元件：圓角按鈕
+# ═════════════════════════════════════════════════════════════
+
+
+class RoundedButton(tk.Canvas):
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        text: str,
+        command=None,
+        *,
+        primary: bool = True,
+        width: int = 132,
+        height: int = 40,
+        radius: int = 10,
+        font=FONT_BUTTON,
+    ) -> None:
+
+        super().__init__(
+            parent,
+            width=width,
+            height=height,
+            bg=parent["bg"] if "bg" in parent.keys() else COLOR_BG,
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+        )
+
+        self._command = command
+        self._text = text
+        self._font = font
+        self._radius = radius
+        self._primary = primary
+        self._state = "normal"
+        self._hover = False
+
+        if primary:
+            self._bg_normal = COLOR_ACCENT
+            self._bg_hover = COLOR_ACCENT_HOVER
+            self._bg_active = COLOR_ACCENT_DIM
+            self._fg = "#ffffff"
+        else:
+            self._bg_normal = COLOR_SURFACE_ALT
+            self._bg_hover = COLOR_BORDER
+            self._bg_active = COLOR_BORDER
+            self._fg = COLOR_TEXT_DIM
+
+        self._bg_disabled = COLOR_SURFACE
+        self._fg_disabled = COLOR_TEXT_MUTED
+
+        self.bind("<Enter>", self._on_enter)
+        self.bind("<Leave>", self._on_leave)
+        self.bind("<Button-1>", self._on_press)
+        self.bind("<ButtonRelease-1>", self._on_release)
+        self.bind("<Configure>", lambda _e: self._draw())
+
+        self._draw()
+
+    # ── 繪製 ──────────────────────────────────────────────
+
+    def _draw(self, active: bool = False) -> None:
+
+        self.delete("all")
+
+        width = self.winfo_width() or int(self["width"])
+        height = self.winfo_height() or int(self["height"])
+
+        if self._state == "disabled":
+            fill = self._bg_disabled
+            fg = self._fg_disabled
+        elif active:
+            fill = self._bg_active
+            fg = self._fg
+        elif self._hover:
+            fill = self._bg_hover
+            fg = self._fg
+        else:
+            fill = self._bg_normal
+            fg = self._fg
+
+        draw_rounded_rect(
+            self,
+            1, 1,
+            width - 1, height - 1,
+            self._radius,
+            fill=fill,
+            outline="",
+        )
+
+        self.create_text(
+            width / 2,
+            height / 2,
+            text=self._text,
+            fill=fg,
+            font=self._font,
+        )
+
+    # ── 事件 ──────────────────────────────────────────────
+
+    def _on_enter(self, _e) -> None:
+        if self._state == "disabled":
+            return
+        self._hover = True
+        self._draw()
+
+    def _on_leave(self, _e) -> None:
+        self._hover = False
+        self._draw()
+
+    def _on_press(self, _e) -> None:
+        if self._state == "disabled":
+            return
+        self._draw(active=True)
+
+    def _on_release(self, e) -> None:
+        if self._state == "disabled":
+            return
+
+        self._draw()
+
+        width = self.winfo_width()
+        height = self.winfo_height()
+
+        if 0 <= e.x <= width and 0 <= e.y <= height:
+            if self._command:
+                self._command()
+
+    # ── 對外 API（模擬 tk.Button.config）───────────────────
+
+    def config(self, state: str | None = None, **_kwargs) -> None:
+        if state is not None:
+            self._state = state
+            self._hover = False
+            self._draw()
+
+    configure = config
+
+
+# ═════════════════════════════════════════════════════════════
+# 元件：圓角進度條
+# ═════════════════════════════════════════════════════════════
+
+
+class RoundedProgressBar(tk.Canvas):
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        height: int = 10,
+        radius: int = 5,
+        track_color: str = COLOR_SURFACE_ALT,
+        fill_color: str = COLOR_ACCENT,
+    ) -> None:
+
+        super().__init__(
+            parent,
+            height=height,
+            bg=parent["bg"] if "bg" in parent.keys() else COLOR_BG,
+            highlightthickness=0,
+            bd=0,
+        )
+
+        self._radius = radius
+        self._track_color = track_color
+        self._fill_color = fill_color
+        self._value = 0.0
+
+        self.bind("<Configure>", lambda _e: self._draw())
+
+    def set(self, value: float) -> None:
+        self._value = max(0.0, min(100.0, value))
+        self._draw()
+
+    def _draw(self) -> None:
+
+        self.delete("all")
+
+        width = self.winfo_width()
+        height = self.winfo_height()
+
+        if width < 4 or height < 4:
+            return
+
+        draw_rounded_rect(
+            self,
+            0, 0, width, height,
+            self._radius,
+            fill=self._track_color,
+            outline="",
+        )
+
+        fill_width = width * (self._value / 100.0)
+
+        if fill_width >= 2:
+            draw_rounded_rect(
+                self,
+                0, 0, fill_width, height,
+                self._radius,
+                fill=self._fill_color,
+                outline="",
+            )
+
+
+# ═════════════════════════════════════════════════════════════
+# 元件：圓角輸入框容器
+# ═════════════════════════════════════════════════════════════
+
+
+class RoundedEntry(tk.Canvas):
+    """
+    圓角外框容器 + 內部無邊框 Entry。
+    Entry 背景與容器背景一致，因此只有圓角外框可見，
+    達成「圓角輸入框」的視覺效果；focus 時外框變成強調色。
+    """
+
+    def __init__(
+        self,
+        parent: tk.Widget,
+        *,
+        height: int = 46,
+        radius: int = 12,
+        font=FONT_UI,
+    ) -> None:
+
+        super().__init__(
+            parent,
+            height=height,
+            bg=parent["bg"] if "bg" in parent.keys() else COLOR_BG,
+            highlightthickness=0,
+            bd=0,
+        )
+
+        self._radius = radius
+        self._border_color = COLOR_BORDER
+        self._focused = False
+
+        self.entry = tk.Entry(
+            self,
+            font=font,
+            bg=COLOR_SURFACE,
+            fg=COLOR_TEXT,
+            insertbackground=COLOR_TEXT,
+            relief="flat",
+            bd=0,
+        )
+
+        self.entry.bind("<FocusIn>", self._on_focus_in)
+        self.entry.bind("<FocusOut>", self._on_focus_out)
+
+        self.bind("<Configure>", lambda _e: self._draw())
+
+    def _on_focus_in(self, _e) -> None:
+        self._focused = True
+        self._border_color = COLOR_ACCENT
+        self._draw()
+
+    def _on_focus_out(self, _e) -> None:
+        self._focused = False
+        self._border_color = COLOR_BORDER
+        self._draw()
+
+    def _draw(self) -> None:
+
+        self.delete("all")
+
+        width = self.winfo_width()
+        height = self.winfo_height()
+
+        if width < 4 or height < 4:
+            return
+
+        border_width = 2 if self._focused else 1
+
+        draw_rounded_rect(
+            self,
+            1, 1,
+            width - 1, height - 1,
+            self._radius,
+            fill=COLOR_SURFACE,
+            outline=self._border_color,
+            width=border_width,
+        )
+
+        inset_x = 14
+        inset_y = 6
+
+        self.create_window(
+            inset_x,
+            inset_y,
+            anchor="nw",
+            window=self.entry,
+            width=width - inset_x * 2,
+            height=height - inset_y * 2,
+        )
+
+
+# ═════════════════════════════════════════════════════════════
 # 主程式
 # ═════════════════════════════════════════════════════════════
 
@@ -458,7 +926,6 @@ class VideoDownloaderApp:
             MIN_HEIGHT,
         )
 
-        # 關鍵：
         # 允許使用者拖動視窗尺寸。
         self.root.resizable(
             True,
@@ -485,7 +952,6 @@ class VideoDownloaderApp:
         # UI
         # ────────────────────────────────────────────────
 
-        self._apply_ttk_style()
         self._build_ui()
 
         # 視窗尺寸變更事件
@@ -501,30 +967,6 @@ class VideoDownloaderApp:
         )
 
     # ═════════════════════════════════════════════════════
-    # ttk Style
-    # ═════════════════════════════════════════════════════
-
-    def _apply_ttk_style(self) -> None:
-
-        style = ttk.Style(
-            self.root
-        )
-
-        style.theme_use(
-            "clam"
-        )
-
-        style.configure(
-            "Custom.Horizontal.TProgressbar",
-            troughcolor=COLOR_SURFACE,
-            background=COLOR_ACCENT,
-            bordercolor=COLOR_BORDER,
-            lightcolor=COLOR_ACCENT,
-            darkcolor=COLOR_ACCENT,
-            thickness=6,
-        )
-
-    # ═════════════════════════════════════════════════════
     # UI Build
     # ═════════════════════════════════════════════════════
 
@@ -534,16 +976,11 @@ class VideoDownloaderApp:
 
         root
         └── main
-            ├── title
-            ├── separator
-            ├── content
-            │   ├── url section
-            │   ├── button section
-            │   ├── video card
-            │   └── progress
-            └── status
-
-        使用 grid 讓主要內容可以隨視窗寬度伸縮。
+            ├── title bar（icon chip + title + version badge）
+            ├── url card（label + rounded entry）
+            ├── button row（圓角按鈕）
+            ├── video card（影片名稱 + 進度條）
+            └── status pill
         """
 
         main = tk.Frame(
@@ -554,82 +991,20 @@ class VideoDownloaderApp:
         main.pack(
             fill=tk.BOTH,
             expand=True,
-            padx=24,
+            padx=22,
             pady=(20, 18),
         )
 
-        # 主體只有單欄
         main.grid_columnconfigure(
             0,
             weight=1,
         )
 
-        # Result / content 不存在獨立固定高度，
-        # 主要由內容自然高度決定。
-        main.grid_rowconfigure(
-            0,
-            weight=0,
-        )
-
-        main.grid_rowconfigure(
-            1,
-            weight=0,
-        )
-
-        main.grid_rowconfigure(
-            2,
-            weight=0,
-        )
-
-        main.grid_rowconfigure(
-            3,
-            weight=0,
-        )
-
-        main.grid_rowconfigure(
-            4,
-            weight=0,
-        )
-
-        # ────────────────────────────────────────────────
-        # Title
-        # ────────────────────────────────────────────────
-
-        self._build_title(
-            main
-        )
-
-        # ────────────────────────────────────────────────
-        # URL
-        # ────────────────────────────────────────────────
-
-        self._build_url_section(
-            main
-        )
-
-        # ────────────────────────────────────────────────
-        # Buttons
-        # ────────────────────────────────────────────────
-
-        self._build_button_section(
-            main
-        )
-
-        # ────────────────────────────────────────────────
-        # Video / progress
-        # ────────────────────────────────────────────────
-
-        self._build_video_section(
-            main
-        )
-
-        # ────────────────────────────────────────────────
-        # Status
-        # ────────────────────────────────────────────────
-
-        self._build_status_section(
-            main
-        )
+        self._build_title(main)
+        self._build_url_section(main)
+        self._build_button_section(main)
+        self._build_video_section(main)
+        self._build_status_section(main)
 
     # ═════════════════════════════════════════════════════
     # Title
@@ -651,33 +1026,37 @@ class VideoDownloaderApp:
             sticky="ew",
         )
 
-        title_frame.grid_columnconfigure(
-            0,
-            weight=0,
-        )
+        title_frame.grid_columnconfigure(1, weight=1)
 
-        title_frame.grid_columnconfigure(
-            1,
-            weight=1,
-        )
-
-        title_frame.grid_columnconfigure(
-            2,
-            weight=0,
-        )
-
-        # Emoji / Icon
-        tk.Label(
+        # Icon chip（圓角小徽章）
+        icon_chip = tk.Canvas(
             title_frame,
-            text="⬇",
-            font=("Segoe UI Emoji", 20),
+            width=38,
+            height=38,
             bg=COLOR_BG,
-            fg=COLOR_ACCENT,
-        ).grid(
+            highlightthickness=0,
+            bd=0,
+        )
+
+        icon_chip.grid(
             row=0,
             column=0,
-            padx=(0, 10),
-            sticky="w",
+            padx=(0, 12),
+        )
+
+        draw_rounded_rect(
+            icon_chip,
+            1, 1, 37, 37,
+            11,
+            fill=COLOR_ACCENT_SOFT,
+            outline="",
+        )
+
+        icon_chip.create_text(
+            19, 19,
+            text="⬇",
+            fill=COLOR_ACCENT,
+            font=("Segoe UI Emoji", 16),
         )
 
         # Title
@@ -694,22 +1073,14 @@ class VideoDownloaderApp:
             sticky="ew",
         )
 
-        # Version
-        tk.Button(
+        # Version badge（圓角膠囊）
+        self._version_badge = self._make_pill_button(
             title_frame,
             text=f"v{APP_VERSION}",
-            font=FONT_SMALL,
-            bg=COLOR_SURFACE_ALT,
-            fg=COLOR_TEXT_DIM,
-            activebackground=COLOR_BORDER,
-            activeforeground=COLOR_TEXT,
-            relief="flat",
-            bd=0,
-            padx=8,
-            pady=4,
             command=self._show_version_info,
-            cursor="hand2",
-        ).grid(
+        )
+
+        self._version_badge.grid(
             row=0,
             column=2,
             sticky="e",
@@ -724,8 +1095,59 @@ class VideoDownloaderApp:
             row=1,
             column=0,
             sticky="ew",
-            pady=(14, 0),
+            pady=(16, 0),
         )
+
+        parent.grid_rowconfigure(1, weight=0)
+
+    def _make_pill_button(
+        self,
+        parent: tk.Widget,
+        text: str,
+        command,
+    ) -> tk.Canvas:
+
+        pad_x = 12
+        approx_width = 16 + len(text) * 7
+        height = 28
+
+        canvas = tk.Canvas(
+            parent,
+            width=approx_width,
+            height=height,
+            bg=parent["bg"],
+            highlightthickness=0,
+            bd=0,
+            cursor="hand2",
+        )
+
+        def render(hover: bool = False) -> None:
+            canvas.delete("all")
+            w = canvas.winfo_width() or approx_width
+            h = canvas.winfo_height() or height
+            draw_rounded_rect(
+                canvas,
+                1, 1, w - 1, h - 1,
+                h / 2,
+                fill=COLOR_BORDER if hover else COLOR_SURFACE_ALT,
+                outline="",
+            )
+            canvas.create_text(
+                w / 2,
+                h / 2,
+                text=text,
+                fill=COLOR_TEXT_DIM,
+                font=FONT_SMALL,
+            )
+
+        canvas.bind("<Enter>", lambda _e: render(True))
+        canvas.bind("<Leave>", lambda _e: render(False))
+        canvas.bind("<Button-1>", lambda _e: command())
+        canvas.bind("<Configure>", lambda _e: render())
+
+        render()
+
+        return canvas
 
     # ═════════════════════════════════════════════════════
     # URL Section
@@ -745,19 +1167,17 @@ class VideoDownloaderApp:
             row=2,
             column=0,
             sticky="ew",
-            pady=(18, 0),
+            pady=(20, 0),
         )
 
-        url_frame.grid_columnconfigure(
-            0,
-            weight=1,
-        )
+        url_frame.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(2, weight=0)
 
         # Label
         tk.Label(
             url_frame,
             text=t("prompt_url"),
-            font=FONT_SMALL,
+            font=FONT_LABEL,
             bg=COLOR_BG,
             fg=COLOR_TEXT_DIM,
             anchor="w",
@@ -765,79 +1185,28 @@ class VideoDownloaderApp:
             row=0,
             column=0,
             sticky="ew",
-            pady=(0, 6),
+            pady=(0, 8),
         )
 
-        # Border
-        self._entry_outer = tk.Frame(
+        # Rounded entry
+        self._rounded_entry = RoundedEntry(
             url_frame,
-            bg=COLOR_BORDER,
-            padx=1,
-            pady=1,
+            height=46,
+            radius=12,
+            font=FONT_UI,
         )
 
-        self._entry_outer.grid(
+        self._rounded_entry.grid(
             row=1,
             column=0,
             sticky="ew",
         )
 
-        self._entry_outer.grid_columnconfigure(
-            0,
-            weight=1,
-        )
-
-        # Inner
-        entry_inner = tk.Frame(
-            self._entry_outer,
-            bg=COLOR_SURFACE,
-        )
-
-        entry_inner.grid(
-            row=0,
-            column=0,
-            sticky="ew",
-        )
-
-        entry_inner.grid_columnconfigure(
-            0,
-            weight=1,
-        )
-
-        # Entry
-        self.entry = tk.Entry(
-            entry_inner,
-            font=FONT_UI,
-            bg=COLOR_SURFACE,
-            fg=COLOR_TEXT,
-            insertbackground=COLOR_TEXT,
-            relief="flat",
-            bd=8,
-        )
-
-        self.entry.grid(
-            row=0,
-            column=0,
-            sticky="ew",
-        )
+        self.entry = self._rounded_entry.entry
 
         self.entry.bind(
             "<Return>",
             lambda _: self._on_download(),
-        )
-
-        self.entry.bind(
-            "<FocusIn>",
-            lambda _: self._entry_outer.config(
-                bg=COLOR_ACCENT
-            ),
-        )
-
-        self.entry.bind(
-            "<FocusOut>",
-            lambda _: self._entry_outer.config(
-                bg=COLOR_BORDER
-            ),
         )
 
         self._bind_entry_context_menu(
@@ -862,27 +1231,31 @@ class VideoDownloaderApp:
             row=3,
             column=0,
             sticky="ew",
-            pady=(14, 0),
+            pady=(16, 0),
         )
 
-        # Download button
-        self.btn_download = self._make_button(
+        parent.grid_rowconfigure(3, weight=0)
+
+        self.btn_download = RoundedButton(
             btn_frame,
             text=t("btn_download"),
             command=self._on_download,
             primary=True,
+            width=136,
+            height=42,
+            radius=11,
         )
 
-        self.btn_download.pack(
-            side="left"
-        )
+        self.btn_download.pack(side="left")
 
-        # Cancel button
-        self.btn_cancel = self._make_button(
+        self.btn_cancel = RoundedButton(
             btn_frame,
             text=t("btn_cancel"),
             command=self._on_cancel,
             primary=False,
+            width=104,
+            height=42,
+            radius=11,
         )
 
         self.btn_cancel.pack(
@@ -890,9 +1263,7 @@ class VideoDownloaderApp:
             padx=(10, 0),
         )
 
-        self.btn_cancel.config(
-            state="disabled"
-        )
+        self.btn_cancel.config(state="disabled")
 
     # ═════════════════════════════════════════════════════
     # Video Section
@@ -911,74 +1282,52 @@ class VideoDownloaderApp:
         video_frame.grid(
             row=4,
             column=0,
-            sticky="ew",
-            pady=(18, 0),
+            sticky="nsew",
+            pady=(20, 0),
         )
 
-        video_frame.grid_columnconfigure(
-            0,
-            weight=1,
-        )
+        video_frame.grid_columnconfigure(0, weight=1)
+        parent.grid_rowconfigure(4, weight=1)
 
         # ────────────────────────────────────────────────
-        # Video card
+        # Video card（圓角卡片）
         # ────────────────────────────────────────────────
 
-        video_card = tk.Frame(
+        self._video_card = RoundedCard(
             video_frame,
-            bg=COLOR_SURFACE,
+            bg_color=COLOR_SURFACE,
+            border_color=COLOR_BORDER,
+            radius=14,
+            shadow=True,
+            height=90,
         )
 
-        video_card.grid(
+        self._video_card.grid(
             row=0,
             column=0,
             sticky="ew",
         )
 
-        video_card.grid_columnconfigure(
-            0,
-            weight=1,
-        )
+        inner = self._video_card.inner
+        inner.grid_columnconfigure(0, weight=1)
 
-        inner = tk.Frame(
-            video_card,
-            bg=COLOR_SURFACE,
-        )
+        pad = tk.Frame(inner, bg=COLOR_SURFACE)
+        pad.pack(fill="both", expand=True, padx=16, pady=14)
+        pad.grid_columnconfigure(0, weight=1)
 
-        inner.grid(
-            row=0,
-            column=0,
-            sticky="ew",
-            padx=14,
-            pady=10,
-        )
-
-        inner.grid_columnconfigure(
-            0,
-            weight=1,
-        )
-
-        # Label
         tk.Label(
-            inner,
+            pad,
             text=t("video"),
-            font=FONT_SMALL,
+            font=FONT_LABEL,
             bg=COLOR_SURFACE,
-            fg=COLOR_TEXT_DIM,
+            fg=COLOR_TEXT_MUTED,
             anchor="w",
-        ).grid(
-            row=0,
-            column=0,
-            sticky="ew",
-        )
+        ).grid(row=0, column=0, sticky="ew")
 
-        # Video title
-        self.title_var = tk.StringVar(
-            value="—"
-        )
+        self.title_var = tk.StringVar(value="—")
 
         self.video_title_label = tk.Label(
-            inner,
+            pad,
             textvariable=self.title_var,
             font=FONT_UI,
             bg=COLOR_SURFACE,
@@ -991,7 +1340,7 @@ class VideoDownloaderApp:
             row=1,
             column=0,
             sticky="ew",
-            pady=(2, 0),
+            pady=(4, 0),
         )
 
         # ────────────────────────────────────────────────
@@ -1007,23 +1356,17 @@ class VideoDownloaderApp:
             row=1,
             column=0,
             sticky="ew",
-            pady=(16, 0),
+            pady=(18, 0),
         )
 
-        progress_frame.grid_columnconfigure(
-            0,
-            weight=1,
-        )
+        progress_frame.grid_columnconfigure(0, weight=1)
 
-        self.progress_var = (
-            tk.DoubleVar()
-        )
-
-        self.progress_bar = ttk.Progressbar(
+        self.progress_bar = RoundedProgressBar(
             progress_frame,
-            variable=self.progress_var,
-            maximum=100,
-            style="Custom.Horizontal.TProgressbar",
+            height=10,
+            radius=5,
+            track_color=COLOR_SURFACE_ALT,
+            fill_color=COLOR_ACCENT,
         )
 
         self.progress_bar.grid(
@@ -1032,9 +1375,7 @@ class VideoDownloaderApp:
             sticky="ew",
         )
 
-        self.pct_var = tk.StringVar(
-            value=""
-        )
+        self.pct_var = tk.StringVar(value="")
 
         tk.Label(
             progress_frame,
@@ -1047,8 +1388,12 @@ class VideoDownloaderApp:
             row=1,
             column=0,
             sticky="ew",
-            pady=(3, 0),
+            pady=(5, 0),
         )
+
+    # 相容於舊有呼叫方式的小 helper
+    def _progress_set(self, value: float) -> None:
+        self.progress_bar.set(value)
 
     # ═════════════════════════════════════════════════════
     # Status
@@ -1068,27 +1413,32 @@ class VideoDownloaderApp:
             row=5,
             column=0,
             sticky="ew",
-            pady=(8, 0),
+            pady=(14, 0),
         )
 
-        status_frame.grid_columnconfigure(
-            1,
-            weight=1,
-        )
+        parent.grid_rowconfigure(5, weight=0)
 
-        self.status_dot = tk.Label(
+        status_frame.grid_columnconfigure(1, weight=1)
+
+        self.status_dot_canvas = tk.Canvas(
             status_frame,
-            text="●",
-            font=("Segoe UI", 8),
+            width=10,
+            height=10,
             bg=COLOR_BG,
-            fg=COLOR_TEXT_DIM,
+            highlightthickness=0,
+            bd=0,
         )
 
-        self.status_dot.grid(
+        self.status_dot_canvas.grid(
             row=0,
             column=0,
-            padx=(0, 6),
-            sticky="w",
+            padx=(2, 8),
+        )
+
+        self._status_dot_item = self.status_dot_canvas.create_oval(
+            1, 1, 9, 9,
+            fill=COLOR_TEXT_DIM,
+            outline="",
         )
 
         self.status_label = tk.Label(
@@ -1104,45 +1454,6 @@ class VideoDownloaderApp:
             row=0,
             column=1,
             sticky="ew",
-        )
-
-    # ═════════════════════════════════════════════════════
-    # Button Factory
-    # ═════════════════════════════════════════════════════
-
-    def _make_button(
-        self,
-        parent: tk.Frame,
-        text: str,
-        command,
-        primary: bool,
-    ) -> tk.Button:
-
-        if primary:
-            bg = COLOR_ACCENT
-            fg = "#ffffff"
-            active_bg = COLOR_ACCENT_DIM
-
-        else:
-            bg = COLOR_SURFACE_ALT
-            fg = COLOR_TEXT_DIM
-            active_bg = COLOR_BORDER
-
-        return tk.Button(
-            parent,
-            text=text,
-            font=FONT_UI,
-            bg=bg,
-            fg=fg,
-            activebackground=active_bg,
-            activeforeground=fg,
-            disabledforeground=COLOR_TEXT_DIM,
-            relief="flat",
-            bd=0,
-            padx=18,
-            pady=8,
-            cursor="hand2",
-            command=command,
         )
 
     # ═════════════════════════════════════════════════════
@@ -1174,14 +1485,9 @@ class VideoDownloaderApp:
 
         self._last_window_width = width
 
-        # 實際內容寬度約為：
-        # Window Width - 左右 margin
-        #
-        # 留一些空間給 card padding。
-
         wrap_width = max(
             240,
-            width - 80,
+            width - 110,
         )
 
         try:
@@ -1434,8 +1740,9 @@ class VideoDownloaderApp:
             text=text
         )
 
-        self.status_dot.config(
-            fg=dot_color
+        self.status_dot_canvas.itemconfig(
+            self._status_dot_item,
+            fill=dot_color,
         )
 
     def _set_title_display(
@@ -1484,9 +1791,7 @@ class VideoDownloaderApp:
 
         if not downloading:
 
-            self.progress_var.set(
-                0
-            )
+            self.progress_bar.set(0)
 
             self.pct_var.set(
                 ""
@@ -1785,7 +2090,7 @@ class VideoDownloaderApp:
 
                 self.root.after(
                     0,
-                    self.progress_var.set,
+                    self._progress_set,
                     pct,
                 )
 
@@ -1852,9 +2157,7 @@ class VideoDownloaderApp:
         output_dir: Path,
     ) -> None:
 
-        self.progress_var.set(
-            100
-        )
+        self.progress_bar.set(100)
 
         self.pct_var.set(
             "100%"
