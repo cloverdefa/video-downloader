@@ -64,9 +64,7 @@ def _enable_windows_dpi_awareness() -> None:
     try:
         user32 = ctypes.windll.user32
 
-        user32.SetProcessDpiAwarenessContext.argtypes = [
-            ctypes.c_void_p
-        ]
+        user32.SetProcessDpiAwarenessContext.argtypes = [ctypes.c_void_p]
         user32.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
 
         # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
@@ -82,9 +80,7 @@ def _enable_windows_dpi_awareness() -> None:
     try:
         shcore = ctypes.windll.shcore
 
-        shcore.SetProcessDpiAwareness.argtypes = [
-            ctypes.c_int
-        ]
+        shcore.SetProcessDpiAwareness.argtypes = [ctypes.c_int]
         shcore.SetProcessDpiAwareness.restype = ctypes.c_int
 
         # PROCESS_PER_MONITOR_DPI_AWARE = 2
@@ -113,14 +109,8 @@ LANGS: dict[str, dict[str, str]] = {
         "downloading": "下載中…",
         "download_success": "下載完成",
         "download_failed": "下載失敗",
-        "yt_dlp_missing": (
-            "錯誤：找不到 yt-dlp，"
-            "請確認已安裝並加入 PATH"
-        ),
-        "ffmpeg_missing": (
-            "錯誤：找不到 ffmpeg，"
-            "請確認已安裝並加入 PATH"
-        ),
+        "yt_dlp_missing": ("錯誤：找不到 yt-dlp，請確認已安裝並加入 PATH"),
+        "ffmpeg_missing": ("錯誤：找不到 ffmpeg，請確認已安裝並加入 PATH"),
         "deno_missing": (
             "未找到 deno，YouTube 下載可能只能取得較低畫質格式。\n"
             "建議將 deno.exe 放在與本程式相同目錄以獲得完整支援。"
@@ -271,33 +261,17 @@ def get_tool_path(
 
     candidates: list[Path] = []
 
-    exe_dir = (
-        Path(sys.argv[0])
-        .resolve()
-        .parent
-    )
+    exe_dir = Path(sys.argv[0]).resolve().parent
 
-    suffix = (
-        ".exe"
-        if sys.platform.startswith("win")
-        else ""
-    )
+    suffix = ".exe" if sys.platform.startswith("win") else ""
 
-    candidates.append(
-        exe_dir / f"{name}{suffix}"
-    )
+    candidates.append(exe_dir / f"{name}{suffix}")
 
     # Windows OneDrive\\bin
     if sys.platform.startswith("win"):
-        one_drive_bin = Path(
-            os.path.expandvars(
-                r"%OneDrive%\bin"
-            )
-        )
+        one_drive_bin = Path(os.path.expandvars(r"%OneDrive%\bin"))
 
-        candidates.append(
-            one_drive_bin / f"{name}.exe"
-        )
+        candidates.append(one_drive_bin / f"{name}.exe")
 
     # PyInstaller _MEIPASS
     meipass = getattr(
@@ -307,10 +281,7 @@ def get_tool_path(
     )
 
     if meipass:
-        candidates.append(
-            Path(meipass)
-            / f"{name}{suffix}"
-        )
+        candidates.append(Path(meipass) / f"{name}{suffix}")
 
     for path in candidates:
         if path.is_file():
@@ -322,9 +293,7 @@ def get_tool_path(
         return Path(found)
 
     if sys.platform.startswith("win"):
-        found = shutil.which(
-            f"{name}.exe"
-        )
+        found = shutil.which(f"{name}.exe")
 
         if found:
             return Path(found)
@@ -378,17 +347,11 @@ def open_directory(
 # ═════════════════════════════════════════════════════════════
 
 
-_PROGRESS_RE = re.compile(
-    r"(\d{1,3}(?:\.\d+)?)%"
-)
+_PROGRESS_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)%")
 
-_DEST_RE = re.compile(
-    r"\[download\]\s+Destination:\s+(.+)"
-)
+_DEST_RE = re.compile(r"\[download\]\s+Destination:\s+(.+)")
 
-_DEST_BARE_RE = re.compile(
-    r"^Destination:\s+(.+)"
-)
+_DEST_BARE_RE = re.compile(r"^Destination:\s+(.+)")
 
 
 def parse_progress(
@@ -399,9 +362,7 @@ def parse_progress(
 
     if match:
         try:
-            return float(
-                match.group(1)
-            )
+            return float(match.group(1))
         except ValueError:
             pass
 
@@ -415,18 +376,13 @@ def parse_title(
     從 yt-dlp 輸出中解析目標檔案名稱。
     """
 
-    match = (
-        _DEST_RE.search(line)
-        or _DEST_BARE_RE.search(line)
-    )
+    match = _DEST_RE.search(line) or _DEST_BARE_RE.search(line)
 
     if not match:
         return None
 
     try:
-        return Path(
-            match.group(1).strip()
-        ).stem
+        return Path(match.group(1).strip()).stem
     except Exception:
         return None
 
@@ -458,18 +414,30 @@ def _rounded_rect_points(
     )
 
     return [
-        x1 + radius, y1,
-        x2 - radius, y1,
-        x2, y1,
-        x2, y1 + radius,
-        x2, y2 - radius,
-        x2, y2,
-        x2 - radius, y2,
-        x1 + radius, y2,
-        x1, y2,
-        x1, y2 - radius,
-        x1, y1 + radius,
-        x1, y1,
+        x1 + radius,
+        y1,
+        x2 - radius,
+        y1,
+        x2,
+        y1,
+        x2,
+        y1 + radius,
+        x2,
+        y2 - radius,
+        x2,
+        y2,
+        x2 - radius,
+        y2,
+        x1 + radius,
+        y2,
+        x1,
+        y2,
+        x1,
+        y2 - radius,
+        x1,
+        y1 + radius,
+        x1,
+        y1,
     ]
 
 
@@ -483,9 +451,7 @@ def draw_rounded_rect(
     **kwargs,
 ) -> int:
 
-    points = _rounded_rect_points(
-        x1, y1, x2, y2, radius
-    )
+    points = _rounded_rect_points(x1, y1, x2, y2, radius)
 
     return canvas.create_polygon(
         points,
@@ -599,7 +565,6 @@ class RoundedCard(tk.Canvas):
 
 
 class RoundedButton(tk.Canvas):
-
     def __init__(
         self,
         parent: tk.Widget,
@@ -677,8 +642,10 @@ class RoundedButton(tk.Canvas):
 
         draw_rounded_rect(
             self,
-            1, 1,
-            width - 1, height - 1,
+            1,
+            1,
+            width - 1,
+            height - 1,
             self._radius,
             fill=fill,
             outline="",
@@ -739,7 +706,6 @@ class RoundedButton(tk.Canvas):
 
 
 class RoundedProgressBar(tk.Canvas):
-
     def __init__(
         self,
         parent: tk.Widget,
@@ -781,7 +747,10 @@ class RoundedProgressBar(tk.Canvas):
 
         draw_rounded_rect(
             self,
-            0, 0, width, height,
+            0,
+            0,
+            width,
+            height,
             self._radius,
             fill=self._track_color,
             outline="",
@@ -792,7 +761,10 @@ class RoundedProgressBar(tk.Canvas):
         if fill_width >= 2:
             draw_rounded_rect(
                 self,
-                0, 0, fill_width, height,
+                0,
+                0,
+                fill_width,
+                height,
                 self._radius,
                 fill=self._fill_color,
                 outline="",
@@ -871,8 +843,10 @@ class RoundedEntry(tk.Canvas):
 
         draw_rounded_rect(
             self,
-            1, 1,
-            width - 1, height - 1,
+            1,
+            1,
+            width - 1,
+            height - 1,
             self._radius,
             fill=COLOR_SURFACE,
             outline=self._border_color,
@@ -898,7 +872,6 @@ class RoundedEntry(tk.Canvas):
 
 
 class VideoDownloaderApp:
-
     MAX_LOG_LINES = 30
 
     def __init__(
@@ -912,14 +885,9 @@ class VideoDownloaderApp:
         # 視窗
         # ────────────────────────────────────────────────
 
-        self.root.title(
-            t("window_title")
-        )
+        self.root.title(t("window_title"))
 
-        self.root.geometry(
-            f"{DEFAULT_WIDTH}x"
-            f"{DEFAULT_HEIGHT}"
-        )
+        self.root.geometry(f"{DEFAULT_WIDTH}x{DEFAULT_HEIGHT}")
 
         self.root.minsize(
             MIN_WIDTH,
@@ -932,9 +900,7 @@ class VideoDownloaderApp:
             True,
         )
 
-        self.root.configure(
-            bg=COLOR_BG
-        )
+        self.root.configure(bg=COLOR_BG)
 
         # ────────────────────────────────────────────────
         # Process state
@@ -1046,14 +1012,18 @@ class VideoDownloaderApp:
 
         draw_rounded_rect(
             icon_chip,
-            1, 1, 37, 37,
+            1,
+            1,
+            37,
+            37,
             11,
             fill=COLOR_ACCENT_SOFT,
             outline="",
         )
 
         icon_chip.create_text(
-            19, 19,
+            19,
+            19,
             text="⬇",
             fill=COLOR_ACCENT,
             font=("Segoe UI Emoji", 16),
@@ -1127,7 +1097,10 @@ class VideoDownloaderApp:
             h = canvas.winfo_height() or height
             draw_rounded_rect(
                 canvas,
-                1, 1, w - 1, h - 1,
+                1,
+                1,
+                w - 1,
+                h - 1,
                 h / 2,
                 fill=COLOR_BORDER if hover else COLOR_SURFACE_ALT,
                 outline="",
@@ -1209,9 +1182,7 @@ class VideoDownloaderApp:
             lambda _: self._on_download(),
         )
 
-        self._bind_entry_context_menu(
-            self.entry
-        )
+        self._bind_entry_context_menu(self.entry)
 
     # ═════════════════════════════════════════════════════
     # Button Section
@@ -1436,7 +1407,10 @@ class VideoDownloaderApp:
         )
 
         self._status_dot_item = self.status_dot_canvas.create_oval(
-            1, 1, 9, 9,
+            1,
+            1,
+            9,
+            9,
             fill=COLOR_TEXT_DIM,
             outline="",
         )
@@ -1491,9 +1465,7 @@ class VideoDownloaderApp:
         )
 
         try:
-            self.video_title_label.config(
-                wraplength=wrap_width
-            )
+            self.video_title_label.config(wraplength=wrap_width)
         except tk.TclError:
             pass
 
@@ -1548,9 +1520,7 @@ class VideoDownloaderApp:
                 return
 
             try:
-                entry.event_generate(
-                    "<<Cut>>"
-                )
+                entry.event_generate("<<Cut>>")
             except tk.TclError:
                 pass
 
@@ -1561,9 +1531,7 @@ class VideoDownloaderApp:
         def do_copy():
 
             try:
-                entry.event_generate(
-                    "<<Copy>>"
-                )
+                entry.event_generate("<<Copy>>")
             except tk.TclError:
                 pass
 
@@ -1604,9 +1572,7 @@ class VideoDownloaderApp:
                 tk.END,
             )
 
-            entry.icursor(
-                tk.END
-            )
+            entry.icursor(tk.END)
 
         # ────────────────────────────────────────────────
         # Clear
@@ -1661,16 +1627,9 @@ class VideoDownloaderApp:
             event: tk.Event,
         ) -> None:
 
-            editable = (
-                entry["state"]
-                != "disabled"
-            )
+            editable = entry["state"] != "disabled"
 
-            write_state = (
-                "normal"
-                if editable
-                else "disabled"
-            )
+            write_state = "normal" if editable else "disabled"
 
             menu.entryconfig(
                 t("ctx_cut"),
@@ -1687,12 +1646,9 @@ class VideoDownloaderApp:
                 state=write_state,
             )
 
-            has_selection = (
-                entry.selection_present()
-            )
+            has_selection = entry.selection_present()
 
             if not has_selection:
-
                 menu.entryconfig(
                     t("ctx_cut"),
                     state="disabled",
@@ -1704,7 +1660,6 @@ class VideoDownloaderApp:
                 )
 
             else:
-
                 menu.entryconfig(
                     t("ctx_copy"),
                     state="normal",
@@ -1736,9 +1691,7 @@ class VideoDownloaderApp:
         dot_color: str = COLOR_TEXT_DIM,
     ) -> None:
 
-        self.status_label.config(
-            text=text
-        )
+        self.status_label.config(text=text)
 
         self.status_dot_canvas.itemconfig(
             self._status_dot_item,
@@ -1750,52 +1703,29 @@ class VideoDownloaderApp:
         title: str,
     ) -> None:
 
-        self.title_var.set(
-            title if title else "—"
-        )
+        self.title_var.set(title if title else "—")
 
     def _set_downloading(
         self,
         downloading: bool,
     ) -> None:
 
-        entry_state = (
-            "disabled"
-            if downloading
-            else "normal"
-        )
+        entry_state = "disabled" if downloading else "normal"
 
-        download_state = (
-            "disabled"
-            if downloading
-            else "normal"
-        )
+        download_state = "disabled" if downloading else "normal"
 
-        cancel_state = (
-            "normal"
-            if downloading
-            else "disabled"
-        )
+        cancel_state = "normal" if downloading else "disabled"
 
-        self.entry.config(
-            state=entry_state
-        )
+        self.entry.config(state=entry_state)
 
-        self.btn_download.config(
-            state=download_state
-        )
+        self.btn_download.config(state=download_state)
 
-        self.btn_cancel.config(
-            state=cancel_state
-        )
+        self.btn_cancel.config(state=cancel_state)
 
         if not downloading:
-
             self.progress_bar.set(0)
 
-            self.pct_var.set(
-                ""
-            )
+            self.pct_var.set("")
 
     # ═════════════════════════════════════════════════════
     # Download
@@ -1803,14 +1733,9 @@ class VideoDownloaderApp:
 
     def _on_download(self) -> None:
 
-        url = (
-            self.entry
-            .get()
-            .strip()
-        )
+        url = self.entry.get().strip()
 
         if not url:
-
             messagebox.showwarning(
                 "錯誤",
                 t("empty_url"),
@@ -1818,16 +1743,11 @@ class VideoDownloaderApp:
 
             return
 
-        yt_dlp = get_tool_path(
-            "yt-dlp"
-        )
+        yt_dlp = get_tool_path("yt-dlp")
 
-        ffmpeg = get_tool_path(
-            "ffmpeg"
-        )
+        ffmpeg = get_tool_path("ffmpeg")
 
         if not yt_dlp:
-
             messagebox.showerror(
                 "錯誤",
                 t("yt_dlp_missing"),
@@ -1836,7 +1756,6 @@ class VideoDownloaderApp:
             return
 
         if not ffmpeg:
-
             messagebox.showerror(
                 "錯誤",
                 t("ffmpeg_missing"),
@@ -1845,12 +1764,9 @@ class VideoDownloaderApp:
             return
 
         # deno optional
-        deno = get_tool_path(
-            "deno"
-        )
+        deno = get_tool_path("deno")
 
         if not deno:
-
             messagebox.showwarning(
                 "提示",
                 t("deno_missing"),
@@ -1862,24 +1778,16 @@ class VideoDownloaderApp:
 
         self._cancelled = False
 
-        self._set_downloading(
-            True
-        )
+        self._set_downloading(True)
 
-        self._set_title_display(
-            ""
-        )
+        self._set_title_display("")
 
         self._set_status(
             t("fetching_formats"),
             COLOR_WARNING,
         )
 
-        output_dir = (
-            Path(sys.argv[0])
-            .resolve()
-            .parent
-        )
+        output_dir = Path(sys.argv[0]).resolve().parent
 
         # ────────────────────────────────────────────────
         # yt-dlp arguments
@@ -1887,23 +1795,15 @@ class VideoDownloaderApp:
 
         args = [
             str(yt_dlp),
-
             "-o",
-            str(
-                output_dir
-                / "%(title)s.%(ext)s"
-            ),
-
+            str(output_dir / "%(title)s.%(ext)s"),
             "-f",
-            (
-                "bv*[ext=mp4]+ba[ext=m4a]"
-                "/bv*+ba/b"
-            ),
-
+            ("bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b"),
+            "--windows-filenames",
+            "--trim-filenames",
+            "100",
             url,
-
             "--no-playlist",
-
             "--user-agent",
             (
                 "Mozilla/5.0 "
@@ -1913,13 +1813,10 @@ class VideoDownloaderApp:
                 "Chrome/122.0.0.0 "
                 "Safari/537.36"
             ),
-
             "--referer",
             url,
-
             "--ffmpeg-location",
             str(ffmpeg.parent),
-
             "--newline",
         ]
 
@@ -1940,12 +1837,7 @@ class VideoDownloaderApp:
 
         self._cancelled = True
 
-        if (
-            self._process
-            and self._process.poll()
-            is None
-        ):
-
+        if self._process and self._process.poll() is None:
             try:
                 self._process.terminate()
             except Exception:
@@ -1956,9 +1848,7 @@ class VideoDownloaderApp:
             COLOR_WARNING,
         )
 
-        self._set_downloading(
-            False
-        )
+        self._set_downloading(False)
 
     # ═════════════════════════════════════════════════════
     # Download Worker
@@ -1974,17 +1864,9 @@ class VideoDownloaderApp:
 
         # Windows：
         # 不顯示 console 視窗。
-        creationflags = (
-            0x08000000
-            if sys.platform.startswith("win")
-            else 0
-        )
+        creationflags = 0x08000000 if sys.platform.startswith("win") else 0
 
-        sys_encoding = (
-            locale.getpreferredencoding(
-                False
-            )
-        )
+        sys_encoding = locale.getpreferredencoding(False)
 
         child_env = os.environ.copy()
 
@@ -2001,31 +1883,19 @@ class VideoDownloaderApp:
         )
 
         try:
-
             self._process = subprocess.Popen(
                 args,
-
                 stdout=subprocess.PIPE,
-
                 stderr=subprocess.STDOUT,
-
                 text=True,
-
                 encoding=sys_encoding,
-
                 errors="replace",
-
-                cwd=str(
-                    output_dir
-                ),
-
+                cwd=str(output_dir),
                 env=child_env,
-
                 creationflags=creationflags,
             )
 
         except Exception as exc:
-
             self.root.after(
                 0,
                 self._on_failure,
@@ -2034,44 +1904,28 @@ class VideoDownloaderApp:
 
             return
 
-        assert (
-            self._process.stdout
-            is not None
-        )
+        assert self._process.stdout is not None
 
         # ────────────────────────────────────────────────
         # Read stdout
         # ────────────────────────────────────────────────
 
         for line in self._process.stdout:
-
             if self._cancelled:
                 break
 
-            log_lines.append(
-                line
-            )
+            log_lines.append(line)
 
-            if (
-                len(log_lines)
-                > self.MAX_LOG_LINES
-            ):
+            if len(log_lines) > self.MAX_LOG_LINES:
                 log_lines.pop(0)
 
             # ────────────────────────────────────────
             # title
             # ────────────────────────────────────────
 
-            title = parse_title(
-                line
-            )
+            title = parse_title(line)
 
-            if (
-                title
-                and self.title_var.get()
-                == "—"
-            ):
-
+            if title and self.title_var.get() == "—":
                 self.root.after(
                     0,
                     self._set_title_display,
@@ -2082,12 +1936,9 @@ class VideoDownloaderApp:
             # progress
             # ────────────────────────────────────────
 
-            pct = parse_progress(
-                line
-            )
+            pct = parse_progress(line)
 
             if pct is not None:
-
                 self.root.after(
                     0,
                     self._progress_set,
@@ -2109,21 +1960,17 @@ class VideoDownloaderApp:
 
         # 等待 process 完整結束
         if self._process.poll() is None:
-
             try:
                 self._process.wait()
             except Exception:
                 pass
 
-        returncode = (
-            self._process.returncode
-        )
+        returncode = self._process.returncode
 
         if self._cancelled:
             return
 
         if returncode == 0:
-
             self.root.after(
                 0,
                 self._on_success,
@@ -2131,16 +1978,10 @@ class VideoDownloaderApp:
             )
 
         else:
-
-            error_text = (
-                "".join(log_lines)
-                .strip()
-            )
+            error_text = "".join(log_lines).strip()
 
             if not error_text:
-                error_text = (
-                    t("download_failed")
-                )
+                error_text = t("download_failed")
 
             self.root.after(
                 0,
@@ -2159,22 +2000,16 @@ class VideoDownloaderApp:
 
         self.progress_bar.set(100)
 
-        self.pct_var.set(
-            "100%"
-        )
+        self.pct_var.set("100%")
 
         self._set_status(
             t("download_success"),
             COLOR_SUCCESS,
         )
 
-        self._set_downloading(
-            False
-        )
+        self._set_downloading(False)
 
-        open_directory(
-            output_dir
-        )
+        open_directory(output_dir)
 
     # ═════════════════════════════════════════════════════
     # Failure
@@ -2190,9 +2025,7 @@ class VideoDownloaderApp:
             COLOR_DANGER,
         )
 
-        self._set_downloading(
-            False
-        )
+        self._set_downloading(False)
 
         messagebox.showerror(
             "yt-dlp 錯誤",
@@ -2208,12 +2041,7 @@ class VideoDownloaderApp:
         # 視窗關閉時，如果還在下載，
         # 先終止 yt-dlp。
 
-        if (
-            self._process
-            and self._process.poll()
-            is None
-        ):
-
+        if self._process and self._process.poll() is None:
             try:
                 self._process.terminate()
             except Exception:
@@ -2232,9 +2060,7 @@ class VideoDownloaderApp:
 def main() -> None:
     root = tk.Tk()
 
-    VideoDownloaderApp(
-        root
-    )
+    VideoDownloaderApp(root)
 
     root.mainloop()
 
