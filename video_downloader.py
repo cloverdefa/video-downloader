@@ -1796,12 +1796,10 @@ class VideoDownloaderApp:
         args = [
             str(yt_dlp),
             "-o",
-            str(output_dir / "%(title)s.%(ext)s"),
+            str(output_dir / "%(title).80B [%(id)s].%(ext)s"),
             "-f",
             ("bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b"),
             "--windows-filenames",
-            "--trim-filenames",
-            "100",
             url,
             "--no-playlist",
             "--user-agent",
