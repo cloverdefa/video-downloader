@@ -1,303 +1,82 @@
 # Video Downloader
 
-一個基於 **yt-dlp + FFmpeg + Deno** 的 Windows GUI 影片下載工具。
+一個以 Python、Tkinter 和 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 製作的桌面影片下載工具。貼上影片網址即可解析並下載，程式會顯示影片名稱與下載進度，也可以取消下載。
 
-提供簡潔的圖形化介面，使用者只需要貼上影片網址即可開始下載，不需要手動操作 yt-dlp 命令列。
+目前 GitHub Release 提供 Windows x64 執行檔。原始碼及打包設定位於本儲存庫。
 
-## 功能特色
+## 功能
 
-* Windows 圖形化介面
-* 基於 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 進行影片下載
-* 使用 [FFmpeg](https://ffmpeg.org/) 進行影片與音訊合併及媒體處理
-* 使用 [Deno](https://deno.com/) 作為 JavaScript Runtime
-* 支援現代 YouTube 影片解析需求
-* Portable 免安裝設計
-* Release 版本內建所需執行檔
-* 顯示影片名稱
-* 顯示下載進度
-* 支援取消下載
-* 支援 `Enter` 快速開始下載
-* 網址輸入框提供滑鼠右鍵選單
-* 下載完成後可以直接再次下載
-* 顯示目前應用程式版本及第三方元件版本
+- 深色圖形介面，以繁體中文顯示
+- 使用 yt-dlp 解析網站並下載影片或音訊
+- 優先選擇 MP4 影片與 M4A 音訊，並透過 FFmpeg 合併；若不可用則依 yt-dlp 規則選擇其他格式
+- 顯示解析狀態、影片名稱及下載進度
+- 可取消下載；下載成功後自動開啟輸出資料夾
+- 網址欄支援 Enter 快速開始及剪貼簿右鍵選單
+- 顯示應用程式、yt-dlp、FFmpeg 與 Deno 版本資訊
 
-## 使用方式
+## 下載與使用
 
-### 下載
-
-請前往 GitHub Releases 下載最新版本：
-
-**[下載最新版本](https://github.com/cloverdefa/video-downloader/releases/latest)**
-
-Release 採用 Portable ZIP 格式，不需要安裝程式。
-
-### Windows
-
-1. 下載最新的 `video-downloader-*.zip`。
-2. 解壓縮 ZIP。
-3. 執行：
-
-```text
-video_downloader.exe
-```
-
-不需要安裝 Python、yt-dlp、FFmpeg 或 Deno。
-
-### 下載影片
+前往 **[GitHub Releases](https://github.com/cloverdefa/video-downloader/releases/latest)** 下載最新的 `video_downloader.exe`，並在 Windows 上執行。Release 執行檔已打包 yt-dlp、FFmpeg 和 Deno，不必另外安裝 Python 或這些工具。
 
 1. 開啟 `video_downloader.exe`。
-2. 將影片網址貼到「影片網址」輸入框。
-3. 點擊「開始下載」。
-4. 程式會使用 yt-dlp 解析影片資訊。
-5. 解析完成後開始下載。
-6. 下載進度會顯示在進度列。
+2. 在「影片網址」欄貼上網址，按「開始下載」或 Enter。
+3. 等候解析與下載；需要時按「取消」停止。
+4. 下載完成後，程式會開啟存放檔案的資料夾。
 
-也可以在網址輸入框中直接按下 `Enter` 開始下載。
+檔案會存到執行檔所在的資料夾。檔名格式為影片標題（最多 80 個字元）及影片 ID。請將執行檔放在可寫入的資料夾。
 
-## 第三方元件
+## 執行環境與工具
 
-本專案主要使用以下第三方工具：
+程式啟動時依序搜尋執行檔所在資料夾、Windows `%OneDrive%\bin`、PyInstaller 暫存目錄及系統 `PATH`，尋找下列工具：
 
-| 元件                                         | 用途                                           |
-| ------------------------------------------ | -------------------------------------------- |
-| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | 影片及音訊下載與網站解析                                 |
-| [FFmpeg](https://ffmpeg.org/)              | 影片、音訊處理與格式合併                                 |
-| [Deno](https://deno.com/)                  | JavaScript Runtime，提供部分網站所需的 JavaScript 執行環境 |
+| 工具 | 必要性 | 用途 |
+| --- | --- | --- |
+| [yt-dlp](https://github.com/yt-dlp/yt-dlp) | 必要 | 網站解析與下載 |
+| [FFmpeg](https://ffmpeg.org/) | 必要 | 合併影音串流及媒體處理 |
+| [Deno](https://deno.com/) | 選用 | 為需要 JavaScript Runtime 的網站（如 YouTube）提供解析支援 |
 
-Release 版本會將上述執行檔直接打包至應用程式中，因此一般使用者不需要另外安裝這些工具。
+若從原始碼執行且缺少 yt-dlp 或 FFmpeg，程式會提示錯誤。缺少 Deno 時仍可執行，但 YouTube 可用格式或畫質可能受限。實際網站支援情況取決於 yt-dlp、網站限制及其變更。
 
-### yt-dlp
+## 從原始碼執行
 
-yt-dlp 是本專案主要的下載核心。
-
-實際支援哪些網站與格式，取決於 yt-dlp 本身的支援範圍。
-
-### FFmpeg
-
-FFmpeg 用於影片及音訊的後製處理。
-
-例如某些網站提供：
-
-* 影片串流
-* 音訊串流
-
-兩者需要分別下載，再透過 FFmpeg 合併成最終影片檔案。
-
-### Deno
-
-Deno 是 JavaScript Runtime。
-
-現代網站，尤其是 YouTube，其影片解析流程可能需要 JavaScript Runtime 才能取得完整的格式資訊。
-
-本專案將 Deno 一起打包，以提供較完整的 YouTube 下載支援。
-
-如果沒有 Deno，程式仍然可以啟動與執行，但部分 YouTube 影片可能只能取得較低畫質或受限的格式。
-
-## Portable 設計
-
-本專案不提供傳統 Windows Installer。
-
-Release 採用 Portable 方式：
-
-```text
-video-downloader-v2026.08.23-windows-x64/
-├── video_downloader.exe
-├── LICENSE
-└── README.md
-```
-
-解壓縮後即可直接執行。
-
-應用程式會優先搜尋自身所在目錄中的第三方執行檔，因此不需要修改 Windows `PATH`。
-
-## 系統需求
-
-目前 Release 主要針對：
-
-| 平台            | 支援狀態 |
-| ------------- | ---- |
-| Windows x64   | 支援   |
-| Windows ARM64 | 未提供  |
-| macOS         | 不支援  |
-| Linux         | 不支援  |
-
-目前版本以 Windows x64 為主要目標平台。
-
-## 開發環境
-
-如果要直接從原始碼執行，需要：
-
-* Windows
-* Python 3.11+
-* yt-dlp
-* FFmpeg
-* Deno
-* PyInstaller
-
-### 從原始碼執行
+建議使用 Windows 與 Python 3.11 或更新版本。Python 需包含 Tkinter。另須安裝 yt-dlp 與 FFmpeg，並讓程式能從上述搜尋路徑找到它們；Deno 選用。
 
 ```powershell
 python video_downloader.py
 ```
 
-程式會依序尋找第三方工具：
+在 Windows 上，`yt-dlp.exe`、`ffmpeg.exe` 及選用的 `deno.exe` 可放在 `video_downloader.py` 同一資料夾，或加入系統 `PATH`。使用 Windows 開發環境可直接使用下節的 spec 建置執行檔。
 
-1. 程式所在目錄
-2. `%OneDrive%\bin`
-3. PyInstaller `_MEIPASS`
-4. 系統 `PATH`
+## 建置 Windows 執行檔
 
-因此開發環境可以直接使用系統安裝的 yt-dlp、FFmpeg 與 Deno。
-
-## 建置
-
-### 安裝 PyInstaller
+安裝 Python 3.11+ 及 PyInstaller，並確保 `yt-dlp`、`ffmpeg` 可從 `PATH` 執行。`deno` 選用；若缺少，建置仍可完成，但 YouTube 支援可能受限。
 
 ```powershell
 python -m pip install --upgrade pip
 python -m pip install pyinstaller
-```
-
-確認第三方工具可以正常使用：
-
-```powershell
 yt-dlp --version
 ffmpeg -version
 deno --version
-```
-
-### 建置執行檔
-
-執行：
-
-```powershell
 pyinstaller --clean video_downloader.spec
 ```
 
-完成後會產生：
+成功後，執行檔位於 `dist/video_downloader.exe`。`video_downloader.spec` 會將 yt-dlp、FFmpeg 和可找到的 Deno 納入打包，並記錄各元件版本。yt-dlp 與 FFmpeg 是必要的；FFmpeg 必須是實際執行檔而非小型 shim。
 
-```text
-dist/
-└── video_downloader.exe
-```
+## 發布流程
 
-### `.spec` 建置流程
+GitHub Actions 的 Release workflow 支援兩種觸發方式：
 
-`video_downloader.spec` 會自動：
+- `test` 分支的 Pull Request 合併至 `main` 後自動執行。
+- 在 GitHub Actions 手動執行 Release workflow，選擇 `patch`、`minor` 或 `major` 版本類型。
 
-1. 搜尋 yt-dlp
-2. 搜尋 FFmpeg
-3. 搜尋 Deno
-4. 取得各元件版本
-5. 將必要執行檔加入 PyInstaller package
-6. 將版本資訊注入 Runtime Hook
-7. 建立 `video_downloader.exe`
+Workflow 會依既有版本計算下一個 `vMAJOR.MINOR.PATCH` 版本，在 Windows runner 取得 yt-dlp、FFmpeg 與 Deno、建置並確認 `video_downloader.exe`，最後建立 GitHub Release 並上傳該執行檔。Release 不會建立 README 所述的 Portable ZIP。
 
-其中 yt-dlp 與 FFmpeg 是必要元件。
+## 支援範圍與限制
 
-Deno 則為選用元件；如果建置環境沒有 Deno，仍然可以完成建置，但 YouTube 的部分功能可能受到限制。
+目前發布的二進位檔目標為 Windows x64。其他平台沒有提供 Release 執行檔；原始碼使用 Tkinter，且打包 workflow 以 Windows 為目標。
 
-## Release 流程
-
-正式版本透過 Git Tag 觸發 GitHub Actions。
-
-例如：
-
-```bash
-git checkout main
-git pull
-
-git tag v2026.08.23
-git push origin v2026.08.23
-```
-
-GitHub Actions 會自動：
-
-1. 建立 Windows build environment
-2. 安裝 Python
-3. 安裝 PyInstaller
-4. 下載最新 yt-dlp
-5. 下載 FFmpeg
-6. 下載 Deno
-7. 執行 PyInstaller build
-8. 驗證產生的 executable
-9. 建立 Portable ZIP
-10. 建立 GitHub Release
-11. 上傳 ZIP 至 Release Assets
-
-最終會產生：
-
-```text
-video-downloader-v2026.08.23-windows-x64.zip
-```
-
-## 版本號
-
-Release 使用 Git Tag 作為版本號：
-
-```text
-vYYYY.MM.DD
-```
-
-例如：
-
-```text
-v2026.08.23
-```
-
-如果同一天需要發布修正版，可以使用：
-
-```text
-v2026.08.23-Fix.1
-```
-
-或：
-
-```text
-v2026.08.23.1
-```
-
-版本號會在 Release build 時注入應用程式，並顯示在 GUI 右上角。
-
-## 注意事項
-
-本專案本身只是 yt-dlp 的圖形化操作介面。
-
-實際下載能力與網站支援情況取決於 yt-dlp。
-
-部分網站可能：
-
-* 要求登入
-* 需要 Cookie
-* 限制下載頻率
-* 使用特殊驗證機制
-* 因網站更新而暫時無法下載
-
-因此無法保證所有網站或所有影片都能正常下載。
-
-## 著作權與使用責任
-
-本專案僅提供影片下載工具的圖形化介面。
-
-使用者應自行確認：
-
-* 下載內容是否具有合法下載權利
-* 是否符合來源網站的服務條款
-* 是否符合所在地相關法律
-
-本專案不授予使用者任何下載受著作權或其他法律限制內容的權利。
-
-第三方元件仍受其各自授權條款約束：
-
-* yt-dlp
-* FFmpeg
-* Deno
+有些網站或影片可能要求登入、Cookie 或其他驗證，也可能限制請求頻率或變更解析方式，因此無法保證所有網址均可下載。此程式不提供 Cookie 管理介面。請確認自己有權下載內容，並遵守來源網站條款及所在地法律。
 
 ## 授權
 
-本專案採用 MIT License。
-
-詳細內容請參閱 [`LICENSE`](LICENSE)。
-
-Copyright © 2026 DAST
-
+本專案採用 MIT License，詳見 [`LICENSE`](LICENSE)。打包的第三方工具仍受各自授權條款約束。
