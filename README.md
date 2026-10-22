@@ -1,6 +1,6 @@
 # Video Downloader
 
-一個以 Python、Tkinter 和 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 製作的桌面影片下載工具。貼上影片網址即可解析並下載，程式會顯示影片名稱與下載進度，也可以取消下載。
+一個以 Rust、egui 和 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 製作的桌面影片下載工具。貼上影片網址即可解析並下載，程式會顯示影片名稱與下載進度，也可以取消下載。
 
 目前 GitHub Release 提供 Windows x64 執行檔。原始碼及打包設定位於本儲存庫。
 
@@ -16,7 +16,7 @@
 
 ## 下載與使用
 
-前往 **[GitHub Releases](https://github.com/cloverdefa/video-downloader/releases/latest)** 下載最新的 `video_downloader.exe`，並在 Windows 上執行。Release 執行檔已打包 yt-dlp、FFmpeg 和 Deno，不必另外安裝 Python 或這些工具。
+前往 **[GitHub Releases](https://github.com/cloverdefa/video-downloader/releases/latest)** 下載最新的 `video_downloader.exe`，並在 Windows 上執行。Release 執行檔已內嵌 yt-dlp、FFmpeg 和 Deno，不必另外安裝 Python 或這些工具。
 
 1. 開啟 `video_downloader.exe`。
 2. 在「影片網址」欄貼上網址，按「開始下載」或 Enter。
@@ -27,7 +27,7 @@
 
 ## 執行環境與工具
 
-程式啟動時依序搜尋執行檔所在資料夾、Windows `%OneDrive%\bin`、PyInstaller 暫存目錄及系統 `PATH`，尋找下列工具：
+程式啟動時依序搜尋執行檔所在資料夾、Windows `%OneDrive%\bin`、程式內嵌工具的暫存目錄及系統 `PATH`，尋找下列工具：
 
 | 工具 | 必要性 | 用途 |
 | --- | --- | --- |
@@ -39,28 +39,23 @@
 
 ## 從原始碼執行
 
-建議使用 Windows 與 Python 3.11 或更新版本。Python 需包含 Tkinter。另須安裝 yt-dlp 與 FFmpeg，並讓程式能從上述搜尋路徑找到它們；Deno 選用。
+建議使用 Windows 與 Rust stable。另須提供 yt-dlp 與 FFmpeg；Deno 選用。將工具放在 `bin/`（檔名分別為 `yt-dlp.exe`、`ffmpeg.exe`、`deno.exe`）可在編譯時嵌入工具；沒有放入 `bin/` 時，程式會搜尋執行檔所在資料夾及系統 PATH。
 
 ```powershell
-python video_downloader.py
+cargo run
 ```
 
-在 Windows 上，`yt-dlp.exe`、`ffmpeg.exe` 及選用的 `deno.exe` 可放在 `video_downloader.py` 同一資料夾，或加入系統 `PATH`。使用 Windows 開發環境可直接使用下節的 spec 建置執行檔。
+在 Windows 上，`yt-dlp.exe`、`ffmpeg.exe` 及選用的 `deno.exe` 可放在程式同一資料夾或加入系統 `PATH`。若要將工具嵌入單一執行檔，請先將工具放入 `bin/`，再建置。
 
 ## 建置 Windows 執行檔
 
-安裝 Python 3.11+ 及 PyInstaller，並確保 `yt-dlp`、`ffmpeg` 可從 `PATH` 執行。`deno` 選用；若缺少，建置仍可完成，但 YouTube 支援可能受限。
+安裝 Rust stable，並將 yt-dlp、FFmpeg 及選用的 Deno 放入 `bin/`。這些工具會嵌入執行檔，首次啟動時解壓至暫存目錄供程式呼叫。
 
 ```powershell
-python -m pip install --upgrade pip
-python -m pip install pyinstaller
-yt-dlp --version
-ffmpeg -version
-deno --version
-pyinstaller --clean video_downloader.spec
+cargo build --release
 ```
 
-成功後，執行檔位於 `dist/video_downloader.exe`。`video_downloader.spec` 會將 yt-dlp、FFmpeg 和可找到的 Deno 納入打包，並記錄各元件版本。yt-dlp 與 FFmpeg 是必要的；FFmpeg 必須是實際執行檔而非小型 shim。
+成功後，執行檔位於 `target/release/video-downloader.exe`。Release workflow 會自動下載並嵌入 yt-dlp、FFmpeg 和 Deno；yt-dlp 與 FFmpeg 是必要工具。
 
 ## 發布流程
 
@@ -69,11 +64,11 @@ GitHub Actions 的 Release workflow 支援兩種觸發方式：
 - `test` 分支的 Pull Request 合併至 `main` 後自動執行。
 - 在 GitHub Actions 手動執行 Release workflow，選擇 `patch`、`minor` 或 `major` 版本類型。
 
-Workflow 會依既有版本計算下一個 `vMAJOR.MINOR.PATCH` 版本，在 Windows runner 取得 yt-dlp、FFmpeg 與 Deno、建置並確認 `video_downloader.exe`，最後建立 GitHub Release 並上傳該執行檔。Release 不會建立 README 所述的 Portable ZIP。
+Workflow 會依既有版本計算下一個 `vMAJOR.MINOR.PATCH` 版本，在 Windows runner 取得 Rust 工具鏈、yt-dlp、FFmpeg 與 Deno，將工具嵌入 Rust 建置的 `video_downloader.exe`，最後建立 GitHub Release 並上傳該執行檔。Release 不會建立 Portable ZIP。
 
 ## 支援範圍與限制
 
-目前發布的二進位檔目標為 Windows x64。其他平台沒有提供 Release 執行檔；原始碼使用 Tkinter，且打包 workflow 以 Windows 為目標。
+目前發布的二進位檔目標為 Windows x64。其他平台沒有提供 Release 執行檔；打包 workflow 以 Windows 為目標。
 
 有些網站或影片可能要求登入、Cookie 或其他驗證，也可能限制請求頻率或變更解析方式，因此無法保證所有網址均可下載。此程式不提供 Cookie 管理介面。請確認自己有權下載內容，並遵守來源網站條款及所在地法律。
 
