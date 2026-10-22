@@ -145,6 +145,6 @@ fn tool_version(name: &str) -> String { tool_path(name).and_then(|p| { let mut c
 fn open_directory(path: &Path) { #[cfg(windows)] { let _ = Command::new("explorer").arg(path).spawn(); } #[cfg(target_os="macos")] { let _ = Command::new("open").arg(path).spawn(); } #[cfg(all(unix, not(target_os="macos")))] { let _ = Command::new("xdg-open").arg(path).spawn(); } }
 
 fn main() -> eframe::Result {
-    let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([680.0, 430.0]).with_min_inner_size([480.0, 360.0]).with_title("影片下載器"), ..Default::default() };
+    let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([680.0, 430.0]).with_min_inner_size([480.0, 360.0]).with_title("影片下載器"), system_font_fallback: true, ..Default::default() };
     eframe::run_native("影片下載器", options, Box::new(|cc| { cc.egui_ctx.set_theme(egui::Theme::Dark); Ok(Box::<DownloaderApp>::default()) }))
 }
