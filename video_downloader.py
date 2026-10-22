@@ -1,19 +1,23 @@
 #!/usr/bin/env -S uv run
-# -*- coding: utf-8 -*-
+# /// script
+# requires-python = ">=3.11"
+# dependencies = []
+# ///
 
 """
 ─────────────────────────────────────────────────────────────
 簡易 GUI 影片下載器 (yt-dlp + ffmpeg)
 
-外觀重構重點（v2 現代化風格）：
-  - 全新配色：深色系 + 單一強調色，對比更柔和
-  - 卡片式版面，使用 Canvas 繪製圓角矩形取代方形 Frame
-  - 自訂圓角按鈕元件（RoundedButton），含 hover / disabled 狀態
-  - 自訂圓角進度條（RoundedProgressBar），取代 ttk 預設樣式
-  - 網址輸入框改為「圓角容器 + 無邊框 Entry」，focus 時邊框變色
-  - 卡片加上細微陰影（雙層圓角矩形模擬 elevation）
-  - 版本徽章、狀態列改為圓角膠囊樣式
-  - 其餘下載邏輯 / 執行緒 / 事件流程與前版完全相同，僅重繪 UI 層
+v3 重構重點：
+  - 語法現代化：walrus、match、deque、contextlib.suppress、
+    Final / Callable 型別標註、PEP 723 inline metadata
+  - 執行緒安全：背景執行緒只透過 queue.Queue 傳遞事件，
+    所有 Tk 操作都在主執行緒處理（root.after 輪詢）
+  - 每次下載使用獨立的 job id 與取消旗標，避免舊事件污染新任務
+  - 安全性：URL 以 "--" 與選項分隔，避免被當成 yt-dlp 參數
+  - 路徑：frozen 時以 sys.executable 為準；%OneDrive% 未設定時略過
+  - 字型依平台選擇；右鍵選單改用 index 而非顯示文字
+  - UI 外觀與下載流程與 v2 相同
 ─────────────────────────────────────────────────────────────
 """
 
@@ -22,27 +26,27 @@ from __future__ import annotations
 import ctypes
 import locale
 import os
+import queue
 import re
 import shutil
 import subprocess
 import sys
 import threading
 import tkinter as tk
-import tkinter.ttk as ttk
+from collections import deque
+from collections.abc import Callable
+from contextlib import suppress
 from pathlib import Path
 from tkinter import messagebox
+from typing import Any, Final, NamedTuple
+
+IS_WIN: Final = sys.platform == "win32"
+IS_MAC: Final = sys.platform == "darwin"
 
 
 # ═════════════════════════════════════════════════════════════
-# PyInstaller / Windows DPI
+# Windows DPI
 # ═════════════════════════════════════════════════════════════
-
-
-if getattr(sys, "frozen", False):
-    # PyInstaller runtime fix
-    meipass = getattr(sys, "_MEIPASS", None)
-    if meipass:
-        sys.path.append(str(meipass))
 
 
 def _enable_windows_dpi_awareness() -> None:
@@ -57,7 +61,7 @@ def _enable_windows_dpi_awareness() -> None:
       不額外呼叫 tk scaling，避免 DPI 二次放大。
     """
 
-    if sys.platform != "win32":
+    if not IS_WIN:
         return
 
     # Windows 10 1703+
@@ -68,11 +72,8 @@ def _enable_windows_dpi_awareness() -> None:
         user32.SetProcessDpiAwarenessContext.restype = ctypes.c_bool
 
         # DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2 = -4
-        context = ctypes.c_void_p(-4)
-
-        if user32.SetProcessDpiAwarenessContext(context):
+        if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
             return
-
     except (AttributeError, OSError):
         pass
 
@@ -85,7 +86,6 @@ def _enable_windows_dpi_awareness() -> None:
 
         # PROCESS_PER_MONITOR_DPI_AWARE = 2
         shcore.SetProcessDpiAwareness(2)
-
     except (AttributeError, OSError):
         pass
 
@@ -98,7 +98,7 @@ _enable_windows_dpi_awareness()
 # ═════════════════════════════════════════════════════════════
 
 
-LANGS: dict[str, dict[str, str]] = {
+LANGS: Final[dict[str, dict[str, str]]] = {
     "zh-TW": {
         "window_title": "影片下載器",
         "prompt_url": "影片網址",
@@ -109,8 +109,8 @@ LANGS: dict[str, dict[str, str]] = {
         "downloading": "下載中…",
         "download_success": "下載完成",
         "download_failed": "下載失敗",
-        "yt_dlp_missing": ("錯誤：找不到 yt-dlp，請確認已安裝並加入 PATH"),
-        "ffmpeg_missing": ("錯誤：找不到 ffmpeg，請確認已安裝並加入 PATH"),
+        "yt_dlp_missing": "錯誤：找不到 yt-dlp，請確認已安裝並加入 PATH",
+        "ffmpeg_missing": "錯誤：找不到 ffmpeg，請確認已安裝並加入 PATH",
         "deno_missing": (
             "未找到 deno，YouTube 下載可能只能取得較低畫質格式。\n"
             "建議將 deno.exe 放在與本程式相同目錄以獲得完整支援。"
@@ -131,7 +131,6 @@ LANGS: dict[str, dict[str, str]] = {
     }
 }
 
-
 _lang = "zh-TW"
 
 
@@ -144,11 +143,13 @@ def t(key: str) -> str:
 # ═════════════════════════════════════════════════════════════
 
 
-DEFAULT_WIDTH = 560
-DEFAULT_HEIGHT = 460
+DEFAULT_WIDTH: Final = 560
+DEFAULT_HEIGHT: Final = 460
 
-MIN_WIDTH = 460
-MIN_HEIGHT = 420
+MIN_WIDTH: Final = 460
+MIN_HEIGHT: Final = 420
+
+POLL_INTERVAL_MS: Final = 50
 
 
 # ═════════════════════════════════════════════════════════════
@@ -156,60 +157,49 @@ MIN_HEIGHT = 420
 # ═════════════════════════════════════════════════════════════
 
 
-COLOR_BG = "#0b0b10"
-COLOR_SURFACE = "#16161d"
-COLOR_SURFACE_ALT = "#1e1e27"
-COLOR_SHADOW = "#000000"
+COLOR_BG: Final = "#0b0b10"
+COLOR_SURFACE: Final = "#16161d"
+COLOR_SURFACE_ALT: Final = "#1e1e27"
+COLOR_SHADOW: Final = "#000000"
 
-COLOR_ACCENT = "#7c6aff"
-COLOR_ACCENT_HOVER = "#9384ff"
-COLOR_ACCENT_DIM = "#5a4ed6"
-COLOR_ACCENT_SOFT = "#241f3d"
+COLOR_ACCENT: Final = "#7c6aff"
+COLOR_ACCENT_HOVER: Final = "#9384ff"
+COLOR_ACCENT_DIM: Final = "#5a4ed6"
+COLOR_ACCENT_SOFT: Final = "#241f3d"
 
-COLOR_SUCCESS = "#34d399"
-COLOR_WARNING = "#fbbf24"
-COLOR_DANGER = "#f87171"
+COLOR_SUCCESS: Final = "#34d399"
+COLOR_WARNING: Final = "#fbbf24"
+COLOR_DANGER: Final = "#f87171"
 
-COLOR_TEXT = "#f2f2f6"
-COLOR_TEXT_DIM = "#93939f"
-COLOR_TEXT_MUTED = "#5c5c68"
+COLOR_TEXT: Final = "#f2f2f6"
+COLOR_TEXT_DIM: Final = "#93939f"
+COLOR_TEXT_MUTED: Final = "#5c5c68"
 
-COLOR_BORDER = "#26262f"
-COLOR_BORDER_FOCUS = COLOR_ACCENT
+COLOR_BORDER: Final = "#26262f"
 
 
 # ═════════════════════════════════════════════════════════════
-# 字型
+# 字型（依平台選擇）
 # ═════════════════════════════════════════════════════════════
 
 
-FONT_UI = (
-    "Microsoft JhengHei UI",
-    10,
-)
+match sys.platform:
+    case "win32":
+        _FONT_FAMILY = "Microsoft JhengHei UI"
+        _EMOJI_FONT = "Segoe UI Emoji"
+    case "darwin":
+        _FONT_FAMILY = "PingFang TC"
+        _EMOJI_FONT = "Apple Color Emoji"
+    case _:
+        _FONT_FAMILY = "Noto Sans CJK TC"
+        _EMOJI_FONT = "Noto Color Emoji"
 
-FONT_TITLE = (
-    "Microsoft JhengHei UI",
-    14,
-    "bold",
-)
-
-FONT_SMALL = (
-    "Microsoft JhengHei UI",
-    9,
-)
-
-FONT_BUTTON = (
-    "Microsoft JhengHei UI",
-    10,
-    "bold",
-)
-
-FONT_LABEL = (
-    "Microsoft JhengHei UI",
-    9,
-    "bold",
-)
+FONT_UI: Final = (_FONT_FAMILY, 10)
+FONT_TITLE: Final = (_FONT_FAMILY, 14, "bold")
+FONT_SMALL: Final = (_FONT_FAMILY, 9)
+FONT_BUTTON: Final = (_FONT_FAMILY, 10, "bold")
+FONT_LABEL: Final = (_FONT_FAMILY, 9, "bold")
+FONT_ICON: Final = (_EMOJI_FONT, 16)
 
 
 # ═════════════════════════════════════════════════════════════
@@ -217,129 +207,65 @@ FONT_LABEL = (
 # ═════════════════════════════════════════════════════════════
 
 
-APP_VERSION = getattr(
-    sys,
-    "_app_version",
-    "dev",
-)
-
-YTDLP_VERSION = getattr(
-    sys,
-    "_ytdlp_version",
-    "unknown",
-)
-
-FFMPEG_VERSION = getattr(
-    sys,
-    "_ffmpeg_version",
-    "unknown",
-)
-
-DENO_VERSION = getattr(
-    sys,
-    "_deno_version",
-    "unknown",
-)
+APP_VERSION: Final = getattr(sys, "_app_version", "dev")
+YTDLP_VERSION: Final = getattr(sys, "_ytdlp_version", "unknown")
+FFMPEG_VERSION: Final = getattr(sys, "_ffmpeg_version", "unknown")
+DENO_VERSION: Final = getattr(sys, "_deno_version", "unknown")
 
 
 # ═════════════════════════════════════════════════════════════
-# 工具路徑
+# 路徑與外部工具
 # ═════════════════════════════════════════════════════════════
 
 
-def get_tool_path(
-    name: str,
-) -> Path | None:
+def get_app_dir() -> Path:
+    """程式所在目錄：PyInstaller 打包後用 sys.executable，否則用腳本路徑。"""
+
+    if getattr(sys, "frozen", False):
+        return Path(sys.executable).resolve().parent
+
+    return Path(sys.argv[0]).resolve().parent
+
+
+def get_tool_path(name: str) -> Path | None:
     """
     工具搜尋順序：
 
-      1. EXE 所在目錄
-      2. OneDrive\\bin
+      1. 程式所在目錄
+      2. %OneDrive%\\bin（僅 Windows，且環境變數存在時）
       3. PyInstaller _MEIPASS
-      4. 系統 PATH
+      4. 系統 PATH（shutil.which 在 Windows 會自動套用 PATHEXT）
     """
 
-    candidates: list[Path] = []
+    exe = f"{name}.exe" if IS_WIN else name
 
-    exe_dir = Path(sys.argv[0]).resolve().parent
+    candidates: list[Path] = [get_app_dir() / exe]
 
-    suffix = ".exe" if sys.platform.startswith("win") else ""
+    if IS_WIN and (one_drive := os.environ.get("ONEDRIVE")):
+        candidates.append(Path(one_drive) / "bin" / exe)
 
-    candidates.append(exe_dir / f"{name}{suffix}")
-
-    # Windows OneDrive\\bin
-    if sys.platform.startswith("win"):
-        one_drive_bin = Path(os.path.expandvars(r"%OneDrive%\bin"))
-
-        candidates.append(one_drive_bin / f"{name}.exe")
-
-    # PyInstaller _MEIPASS
-    meipass = getattr(
-        sys,
-        "_MEIPASS",
-        None,
-    )
-
-    if meipass:
-        candidates.append(Path(meipass) / f"{name}{suffix}")
+    if meipass := getattr(sys, "_MEIPASS", None):
+        candidates.append(Path(meipass) / exe)
 
     for path in candidates:
         if path.is_file():
             return path
 
-    found = shutil.which(name)
-
-    if found:
+    if found := shutil.which(name):
         return Path(found)
-
-    if sys.platform.startswith("win"):
-        found = shutil.which(f"{name}.exe")
-
-        if found:
-            return Path(found)
 
     return None
 
 
-# ═════════════════════════════════════════════════════════════
-# 開啟目錄
-# ═════════════════════════════════════════════════════════════
-
-
-def open_directory(
-    path: Path,
-) -> None:
-
-    try:
-        if sys.platform.startswith("win"):
-            subprocess.run(
-                [
-                    "explorer",
-                    str(path),
-                ],
-                check=False,
-            )
-
-        elif sys.platform == "darwin":
-            subprocess.run(
-                [
-                    "open",
-                    str(path),
-                ],
-                check=False,
-            )
-
-        else:
-            subprocess.run(
-                [
-                    "xdg-open",
-                    str(path),
-                ],
-                check=False,
-            )
-
-    except Exception:
-        pass
+def open_directory(path: Path) -> None:
+    with suppress(Exception):
+        match sys.platform:
+            case "win32":
+                os.startfile(path)  # type: ignore[attr-defined]
+            case "darwin":
+                subprocess.Popen(["open", str(path)])
+            case _:
+                subprocess.Popen(["xdg-open", str(path)])
 
 
 # ═════════════════════════════════════════════════════════════
@@ -347,49 +273,39 @@ def open_directory(
 # ═════════════════════════════════════════════════════════════
 
 
-_PROGRESS_RE = re.compile(r"(\d{1,3}(?:\.\d+)?)%")
-
-_DEST_RE = re.compile(r"\[download\]\s+Destination:\s+(.+)")
-
-_DEST_BARE_RE = re.compile(r"^Destination:\s+(.+)")
+_PROGRESS_RE: Final = re.compile(r"(\d{1,3}(?:\.\d+)?)%")
+_DEST_RE: Final = re.compile(r"\[download\]\s+Destination:\s+(.+)")
+_DEST_BARE_RE: Final = re.compile(r"^Destination:\s+(.+)")
 
 
-def parse_progress(
-    line: str,
-) -> float | None:
-
-    match = _PROGRESS_RE.search(line)
-
-    if match:
-        try:
-            return float(match.group(1))
-        except ValueError:
-            pass
+def parse_progress(line: str) -> float | None:
+    if m := _PROGRESS_RE.search(line):
+        return float(m[1])
 
     return None
 
 
-def parse_title(
-    line: str,
-) -> str | None:
-    """
-    從 yt-dlp 輸出中解析目標檔案名稱。
-    """
+def parse_title(line: str) -> str | None:
+    """從 yt-dlp 輸出中解析目標檔案名稱。"""
 
-    match = _DEST_RE.search(line) or _DEST_BARE_RE.search(line)
+    if m := _DEST_RE.search(line) or _DEST_BARE_RE.search(line):
+        return Path(m[1].strip()).stem
 
-    if not match:
-        return None
-
-    try:
-        return Path(match.group(1).strip()).stem
-    except Exception:
-        return None
+    return None
 
 
 # ═════════════════════════════════════════════════════════════
 # 共用：圓角繪製工具
 # ═════════════════════════════════════════════════════════════
+
+
+def _parent_bg(widget: tk.Misc) -> str:
+    """取得父元件背景色，取不到時退回主背景色。"""
+
+    try:
+        return widget.cget("bg")
+    except tk.TclError:
+        return COLOR_BG
 
 
 def _rounded_rect_points(
@@ -404,41 +320,24 @@ def _rounded_rect_points(
     可畫出視覺上平滑的圓角。
     """
 
-    radius = max(
-        0,
-        min(
-            radius,
-            (x2 - x1) / 2,
-            (y2 - y1) / 2,
-        ),
-    )
+    r = max(0.0, min(radius, (x2 - x1) / 2, (y2 - y1) / 2))
 
-    return [
-        x1 + radius,
-        y1,
-        x2 - radius,
-        y1,
-        x2,
-        y1,
-        x2,
-        y1 + radius,
-        x2,
-        y2 - radius,
-        x2,
-        y2,
-        x2 - radius,
-        y2,
-        x1 + radius,
-        y2,
-        x1,
-        y2,
-        x1,
-        y2 - radius,
-        x1,
-        y1 + radius,
-        x1,
-        y1,
+    points = [
+        (x1 + r, y1),
+        (x2 - r, y1),
+        (x2, y1),
+        (x2, y1 + r),
+        (x2, y2 - r),
+        (x2, y2),
+        (x2 - r, y2),
+        (x1 + r, y2),
+        (x1, y2),
+        (x1, y2 - r),
+        (x1, y1 + r),
+        (x1, y1),
     ]
+
+    return [coord for point in points for coord in point]
 
 
 def draw_rounded_rect(
@@ -448,13 +347,10 @@ def draw_rounded_rect(
     x2: float,
     y2: float,
     radius: float,
-    **kwargs,
+    **kwargs: Any,
 ) -> int:
-
-    points = _rounded_rect_points(x1, y1, x2, y2, radius)
-
     return canvas.create_polygon(
-        points,
+        _rounded_rect_points(x1, y1, x2, y2, radius),
         smooth=True,
         **kwargs,
     )
@@ -471,20 +367,21 @@ class RoundedCard(tk.Canvas):
     一般 tk.Frame，方便沿用既有的 grid / pack 佈局方式。
     """
 
+    _SHADOW_OFFSET: Final = 3
+
     def __init__(
         self,
-        parent: tk.Widget,
+        parent: tk.Misc,
         *,
         bg_color: str = COLOR_SURFACE,
         border_color: str = COLOR_BORDER,
         radius: int = 14,
         shadow: bool = True,
-        **kwargs,
+        **kwargs: Any,
     ) -> None:
-
         super().__init__(
             parent,
-            bg=parent["bg"] if "bg" in parent.keys() else COLOR_BG,
+            bg=_parent_bg(parent),
             highlightthickness=0,
             bd=0,
             **kwargs,
@@ -495,21 +392,11 @@ class RoundedCard(tk.Canvas):
         self._radius = radius
         self._shadow = shadow
 
-        self.inner = tk.Frame(
-            self,
-            bg=bg_color,
-        )
+        self.inner = tk.Frame(self, bg=bg_color)
 
-        self.bind(
-            "<Configure>",
-            self._redraw,
-        )
+        self.bind("<Configure>", self._redraw)
 
-    def _redraw(
-        self,
-        event: tk.Event | None = None,
-    ) -> None:
-
+    def _redraw(self, _event: tk.Event | None = None) -> None:
         self.delete("all")
 
         width = self.winfo_width()
@@ -519,12 +406,13 @@ class RoundedCard(tk.Canvas):
             return
 
         pad = 2
+        drop = self._SHADOW_OFFSET if self._shadow else 0
 
         if self._shadow:
             draw_rounded_rect(
                 self,
                 pad,
-                pad + 3,
+                pad + drop,
                 width - pad,
                 height - pad + 1,
                 self._radius,
@@ -538,7 +426,7 @@ class RoundedCard(tk.Canvas):
             pad,
             pad,
             width - pad,
-            height - pad - (3 if self._shadow else 0),
+            height - pad - drop,
             self._radius,
             fill=self._bg_color,
             outline=self._border_color,
@@ -551,12 +439,8 @@ class RoundedCard(tk.Canvas):
             anchor="nw",
             window=self.inner,
             width=width - 2 * pad - 2,
-            height=height - 2 * pad - 2 - (3 if self._shadow else 0),
+            height=height - 2 * pad - 2 - drop,
         )
-
-    def set_border_color(self, color: str) -> None:
-        self._border_color = color
-        self._redraw()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -567,22 +451,21 @@ class RoundedCard(tk.Canvas):
 class RoundedButton(tk.Canvas):
     def __init__(
         self,
-        parent: tk.Widget,
+        parent: tk.Misc,
         text: str,
-        command=None,
+        command: Callable[[], None] | None = None,
         *,
         primary: bool = True,
         width: int = 132,
         height: int = 40,
         radius: int = 10,
-        font=FONT_BUTTON,
+        font: tuple[Any, ...] = FONT_BUTTON,
     ) -> None:
-
         super().__init__(
             parent,
             width=width,
             height=height,
-            bg=parent["bg"] if "bg" in parent.keys() else COLOR_BG,
+            bg=_parent_bg(parent),
             highlightthickness=0,
             bd=0,
             cursor="hand2",
@@ -592,8 +475,7 @@ class RoundedButton(tk.Canvas):
         self._text = text
         self._font = font
         self._radius = radius
-        self._primary = primary
-        self._state = "normal"
+        self._enabled = True
         self._hover = False
 
         if primary:
@@ -621,24 +503,19 @@ class RoundedButton(tk.Canvas):
     # ── 繪製 ──────────────────────────────────────────────
 
     def _draw(self, active: bool = False) -> None:
-
         self.delete("all")
 
         width = self.winfo_width() or int(self["width"])
         height = self.winfo_height() or int(self["height"])
 
-        if self._state == "disabled":
-            fill = self._bg_disabled
-            fg = self._fg_disabled
+        if not self._enabled:
+            fill, fg = self._bg_disabled, self._fg_disabled
         elif active:
-            fill = self._bg_active
-            fg = self._fg
+            fill, fg = self._bg_active, self._fg
         elif self._hover:
-            fill = self._bg_hover
-            fg = self._fg
+            fill, fg = self._bg_hover, self._fg
         else:
-            fill = self._bg_normal
-            fg = self._fg
+            fill, fg = self._bg_normal, self._fg
 
         draw_rounded_rect(
             self,
@@ -661,43 +538,36 @@ class RoundedButton(tk.Canvas):
 
     # ── 事件 ──────────────────────────────────────────────
 
-    def _on_enter(self, _e) -> None:
-        if self._state == "disabled":
-            return
-        self._hover = True
-        self._draw()
+    def _on_enter(self, _e: tk.Event) -> None:
+        if self._enabled:
+            self._hover = True
+            self._draw()
 
-    def _on_leave(self, _e) -> None:
+    def _on_leave(self, _e: tk.Event) -> None:
         self._hover = False
         self._draw()
 
-    def _on_press(self, _e) -> None:
-        if self._state == "disabled":
-            return
-        self._draw(active=True)
+    def _on_press(self, _e: tk.Event) -> None:
+        if self._enabled:
+            self._draw(active=True)
 
-    def _on_release(self, e) -> None:
-        if self._state == "disabled":
+    def _on_release(self, e: tk.Event) -> None:
+        if not self._enabled:
             return
 
         self._draw()
 
-        width = self.winfo_width()
-        height = self.winfo_height()
+        inside = 0 <= e.x <= self.winfo_width() and 0 <= e.y <= self.winfo_height()
 
-        if 0 <= e.x <= width and 0 <= e.y <= height:
-            if self._command:
-                self._command()
+        if inside and self._command:
+            self._command()
 
-    # ── 對外 API（模擬 tk.Button.config）───────────────────
+    # ── 對外 API ─────────────────────────────────────────
 
-    def config(self, state: str | None = None, **_kwargs) -> None:
-        if state is not None:
-            self._state = state
-            self._hover = False
-            self._draw()
-
-    configure = config
+    def set_enabled(self, enabled: bool) -> None:
+        self._enabled = enabled
+        self._hover = False
+        self._draw()
 
 
 # ═════════════════════════════════════════════════════════════
@@ -708,18 +578,17 @@ class RoundedButton(tk.Canvas):
 class RoundedProgressBar(tk.Canvas):
     def __init__(
         self,
-        parent: tk.Widget,
+        parent: tk.Misc,
         *,
         height: int = 10,
         radius: int = 5,
         track_color: str = COLOR_SURFACE_ALT,
         fill_color: str = COLOR_ACCENT,
     ) -> None:
-
         super().__init__(
             parent,
             height=height,
-            bg=parent["bg"] if "bg" in parent.keys() else COLOR_BG,
+            bg=_parent_bg(parent),
             highlightthickness=0,
             bd=0,
         )
@@ -736,7 +605,6 @@ class RoundedProgressBar(tk.Canvas):
         self._draw()
 
     def _draw(self) -> None:
-
         self.delete("all")
 
         width = self.winfo_width()
@@ -785,23 +653,21 @@ class RoundedEntry(tk.Canvas):
 
     def __init__(
         self,
-        parent: tk.Widget,
+        parent: tk.Misc,
         *,
         height: int = 46,
         radius: int = 12,
-        font=FONT_UI,
+        font: tuple[Any, ...] = FONT_UI,
     ) -> None:
-
         super().__init__(
             parent,
             height=height,
-            bg=parent["bg"] if "bg" in parent.keys() else COLOR_BG,
+            bg=_parent_bg(parent),
             highlightthickness=0,
             bd=0,
         )
 
         self._radius = radius
-        self._border_color = COLOR_BORDER
         self._focused = False
 
         self.entry = tk.Entry(
@@ -814,23 +680,16 @@ class RoundedEntry(tk.Canvas):
             bd=0,
         )
 
-        self.entry.bind("<FocusIn>", self._on_focus_in)
-        self.entry.bind("<FocusOut>", self._on_focus_out)
+        self.entry.bind("<FocusIn>", lambda _e: self._set_focus(True))
+        self.entry.bind("<FocusOut>", lambda _e: self._set_focus(False))
 
         self.bind("<Configure>", lambda _e: self._draw())
 
-    def _on_focus_in(self, _e) -> None:
-        self._focused = True
-        self._border_color = COLOR_ACCENT
-        self._draw()
-
-    def _on_focus_out(self, _e) -> None:
-        self._focused = False
-        self._border_color = COLOR_BORDER
+    def _set_focus(self, focused: bool) -> None:
+        self._focused = focused
         self._draw()
 
     def _draw(self) -> None:
-
         self.delete("all")
 
         width = self.winfo_width()
@@ -838,8 +697,6 @@ class RoundedEntry(tk.Canvas):
 
         if width < 4 or height < 4:
             return
-
-        border_width = 2 if self._focused else 1
 
         draw_rounded_rect(
             self,
@@ -849,12 +706,11 @@ class RoundedEntry(tk.Canvas):
             height - 1,
             self._radius,
             fill=COLOR_SURFACE,
-            outline=self._border_color,
-            width=border_width,
+            outline=COLOR_ACCENT if self._focused else COLOR_BORDER,
+            width=2 if self._focused else 1,
         )
 
-        inset_x = 14
-        inset_y = 6
+        inset_x, inset_y = 14, 6
 
         self.create_window(
             inset_x,
@@ -867,70 +723,52 @@ class RoundedEntry(tk.Canvas):
 
 
 # ═════════════════════════════════════════════════════════════
+# 背景執行緒 → 主執行緒 事件
+# ═════════════════════════════════════════════════════════════
+
+
+class _Event(NamedTuple):
+    job: int
+    kind: str  # "title" | "progress" | "success" | "failure"
+    data: Any = None
+
+
+# ═════════════════════════════════════════════════════════════
 # 主程式
 # ═════════════════════════════════════════════════════════════
 
 
 class VideoDownloaderApp:
-    MAX_LOG_LINES = 30
+    MAX_LOG_LINES: Final = 30
+    EMPTY_TITLE: Final = "—"
 
-    def __init__(
-        self,
-        root: tk.Tk,
-    ) -> None:
-
+    def __init__(self, root: tk.Tk) -> None:
         self.root = root
 
-        # ────────────────────────────────────────────────
-        # 視窗
-        # ────────────────────────────────────────────────
-
+        # ── 視窗 ────────────────────────────────────────
         self.root.title(t("window_title"))
-
         self.root.geometry(f"{DEFAULT_WIDTH}x{DEFAULT_HEIGHT}")
-
-        self.root.minsize(
-            MIN_WIDTH,
-            MIN_HEIGHT,
-        )
-
-        # 允許使用者拖動視窗尺寸。
-        self.root.resizable(
-            True,
-            True,
-        )
-
+        self.root.minsize(MIN_WIDTH, MIN_HEIGHT)
+        self.root.resizable(True, True)
         self.root.configure(bg=COLOR_BG)
 
-        # ────────────────────────────────────────────────
-        # Process state
-        # ────────────────────────────────────────────────
+        # ── 下載狀態 ────────────────────────────────────
+        self._process: subprocess.Popen[str] | None = None
+        self._events: queue.Queue[_Event] = queue.Queue()
+        self._job_id = 0
+        self._cancel_event = threading.Event()
+        self._poll_after_id: str | None = None
 
-        self._process: subprocess.Popen | None = None
-
-        self._cancelled = False
-
-        # 紀錄目前視窗寬度，
-        # 用來動態調整影片名稱 wraplength。
+        # 紀錄目前視窗寬度，用來動態調整影片名稱 wraplength。
         self._last_window_width = DEFAULT_WIDTH
 
-        # ────────────────────────────────────────────────
-        # UI
-        # ────────────────────────────────────────────────
-
+        # ── UI ──────────────────────────────────────────
         self._build_ui()
 
-        # 視窗尺寸變更事件
-        self.root.bind(
-            "<Configure>",
-            self._on_window_configure,
-        )
+        self.root.bind("<Configure>", self._on_window_configure)
+        self.root.protocol("WM_DELETE_WINDOW", self._on_close)
 
-        # 關閉視窗
-        self.root.protocol(
-            "WM_DELETE_WINDOW",
-            self._on_close,
-        )
+        self._poll_events()
 
     # ═════════════════════════════════════════════════════
     # UI Build
@@ -949,22 +787,9 @@ class VideoDownloaderApp:
             └── status pill
         """
 
-        main = tk.Frame(
-            self.root,
-            bg=COLOR_BG,
-        )
-
-        main.pack(
-            fill=tk.BOTH,
-            expand=True,
-            padx=22,
-            pady=(20, 18),
-        )
-
-        main.grid_columnconfigure(
-            0,
-            weight=1,
-        )
+        main = tk.Frame(self.root, bg=COLOR_BG)
+        main.pack(fill=tk.BOTH, expand=True, padx=22, pady=(20, 18))
+        main.grid_columnconfigure(0, weight=1)
 
         self._build_title(main)
         self._build_url_section(main)
@@ -972,26 +797,11 @@ class VideoDownloaderApp:
         self._build_video_section(main)
         self._build_status_section(main)
 
-    # ═════════════════════════════════════════════════════
-    # Title
-    # ═════════════════════════════════════════════════════
+    # ── Title ─────────────────────────────────────────────
 
-    def _build_title(
-        self,
-        parent: tk.Frame,
-    ) -> None:
-
-        title_frame = tk.Frame(
-            parent,
-            bg=COLOR_BG,
-        )
-
-        title_frame.grid(
-            row=0,
-            column=0,
-            sticky="ew",
-        )
-
+    def _build_title(self, parent: tk.Frame) -> None:
+        title_frame = tk.Frame(parent, bg=COLOR_BG)
+        title_frame.grid(row=0, column=0, sticky="ew")
         title_frame.grid_columnconfigure(1, weight=1)
 
         # Icon chip（圓角小徽章）
@@ -1003,12 +813,7 @@ class VideoDownloaderApp:
             highlightthickness=0,
             bd=0,
         )
-
-        icon_chip.grid(
-            row=0,
-            column=0,
-            padx=(0, 12),
-        )
+        icon_chip.grid(row=0, column=0, padx=(0, 12))
 
         draw_rounded_rect(
             icon_chip,
@@ -1026,10 +831,9 @@ class VideoDownloaderApp:
             19,
             text="⬇",
             fill=COLOR_ACCENT,
-            font=("Segoe UI Emoji", 16),
+            font=FONT_ICON,
         )
 
-        # Title
         tk.Label(
             title_frame,
             text=t("window_title"),
@@ -1037,11 +841,7 @@ class VideoDownloaderApp:
             bg=COLOR_BG,
             fg=COLOR_TEXT,
             anchor="w",
-        ).grid(
-            row=0,
-            column=1,
-            sticky="ew",
-        )
+        ).grid(row=0, column=1, sticky="ew")
 
         # Version badge（圓角膠囊）
         self._version_badge = self._make_pill_button(
@@ -1049,35 +849,22 @@ class VideoDownloaderApp:
             text=f"v{APP_VERSION}",
             command=self._show_version_info,
         )
-
-        self._version_badge.grid(
-            row=0,
-            column=2,
-            sticky="e",
-        )
+        self._version_badge.grid(row=0, column=2, sticky="e")
 
         # Separator
-        tk.Frame(
-            parent,
-            height=1,
-            bg=COLOR_BORDER,
-        ).grid(
+        tk.Frame(parent, height=1, bg=COLOR_BORDER).grid(
             row=1,
             column=0,
             sticky="ew",
             pady=(16, 0),
         )
 
-        parent.grid_rowconfigure(1, weight=0)
-
     def _make_pill_button(
         self,
         parent: tk.Widget,
         text: str,
-        command,
+        command: Callable[[], None],
     ) -> tk.Canvas:
-
-        pad_x = 12
         approx_width = 16 + len(text) * 7
         height = 28
 
@@ -1085,7 +872,7 @@ class VideoDownloaderApp:
             parent,
             width=approx_width,
             height=height,
-            bg=parent["bg"],
+            bg=_parent_bg(parent),
             highlightthickness=0,
             bd=0,
             cursor="hand2",
@@ -1122,31 +909,13 @@ class VideoDownloaderApp:
 
         return canvas
 
-    # ═════════════════════════════════════════════════════
-    # URL Section
-    # ═════════════════════════════════════════════════════
+    # ── URL ───────────────────────────────────────────────
 
-    def _build_url_section(
-        self,
-        parent: tk.Frame,
-    ) -> None:
-
-        url_frame = tk.Frame(
-            parent,
-            bg=COLOR_BG,
-        )
-
-        url_frame.grid(
-            row=2,
-            column=0,
-            sticky="ew",
-            pady=(20, 0),
-        )
-
+    def _build_url_section(self, parent: tk.Frame) -> None:
+        url_frame = tk.Frame(parent, bg=COLOR_BG)
+        url_frame.grid(row=2, column=0, sticky="ew", pady=(20, 0))
         url_frame.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(2, weight=0)
 
-        # Label
         tk.Label(
             url_frame,
             text=t("prompt_url"),
@@ -1154,58 +923,21 @@ class VideoDownloaderApp:
             bg=COLOR_BG,
             fg=COLOR_TEXT_DIM,
             anchor="w",
-        ).grid(
-            row=0,
-            column=0,
-            sticky="ew",
-            pady=(0, 8),
-        )
+        ).grid(row=0, column=0, sticky="ew", pady=(0, 8))
 
-        # Rounded entry
-        self._rounded_entry = RoundedEntry(
-            url_frame,
-            height=46,
-            radius=12,
-            font=FONT_UI,
-        )
-
-        self._rounded_entry.grid(
-            row=1,
-            column=0,
-            sticky="ew",
-        )
+        self._rounded_entry = RoundedEntry(url_frame, height=46, radius=12)
+        self._rounded_entry.grid(row=1, column=0, sticky="ew")
 
         self.entry = self._rounded_entry.entry
-
-        self.entry.bind(
-            "<Return>",
-            lambda _: self._on_download(),
-        )
+        self.entry.bind("<Return>", lambda _e: self._on_download())
 
         self._bind_entry_context_menu(self.entry)
 
-    # ═════════════════════════════════════════════════════
-    # Button Section
-    # ═════════════════════════════════════════════════════
+    # ── Buttons ───────────────────────────────────────────
 
-    def _build_button_section(
-        self,
-        parent: tk.Frame,
-    ) -> None:
-
-        btn_frame = tk.Frame(
-            parent,
-            bg=COLOR_BG,
-        )
-
-        btn_frame.grid(
-            row=3,
-            column=0,
-            sticky="ew",
-            pady=(16, 0),
-        )
-
-        parent.grid_rowconfigure(3, weight=0)
+    def _build_button_section(self, parent: tk.Frame) -> None:
+        btn_frame = tk.Frame(parent, bg=COLOR_BG)
+        btn_frame.grid(row=3, column=0, sticky="ew", pady=(16, 0))
 
         self.btn_download = RoundedButton(
             btn_frame,
@@ -1216,7 +948,6 @@ class VideoDownloaderApp:
             height=42,
             radius=11,
         )
-
         self.btn_download.pack(side="left")
 
         self.btn_cancel = RoundedButton(
@@ -1228,42 +959,18 @@ class VideoDownloaderApp:
             height=42,
             radius=11,
         )
+        self.btn_cancel.pack(side="left", padx=(10, 0))
+        self.btn_cancel.set_enabled(False)
 
-        self.btn_cancel.pack(
-            side="left",
-            padx=(10, 0),
-        )
+    # ── Video ─────────────────────────────────────────────
 
-        self.btn_cancel.config(state="disabled")
-
-    # ═════════════════════════════════════════════════════
-    # Video Section
-    # ═════════════════════════════════════════════════════
-
-    def _build_video_section(
-        self,
-        parent: tk.Frame,
-    ) -> None:
-
-        video_frame = tk.Frame(
-            parent,
-            bg=COLOR_BG,
-        )
-
-        video_frame.grid(
-            row=4,
-            column=0,
-            sticky="nsew",
-            pady=(20, 0),
-        )
-
+    def _build_video_section(self, parent: tk.Frame) -> None:
+        video_frame = tk.Frame(parent, bg=COLOR_BG)
+        video_frame.grid(row=4, column=0, sticky="nsew", pady=(20, 0))
         video_frame.grid_columnconfigure(0, weight=1)
         parent.grid_rowconfigure(4, weight=1)
 
-        # ────────────────────────────────────────────────
         # Video card（圓角卡片）
-        # ────────────────────────────────────────────────
-
         self._video_card = RoundedCard(
             video_frame,
             bg_color=COLOR_SURFACE,
@@ -1272,12 +979,7 @@ class VideoDownloaderApp:
             shadow=True,
             height=90,
         )
-
-        self._video_card.grid(
-            row=0,
-            column=0,
-            sticky="ew",
-        )
+        self._video_card.grid(row=0, column=0, sticky="ew")
 
         inner = self._video_card.inner
         inner.grid_columnconfigure(0, weight=1)
@@ -1295,7 +997,7 @@ class VideoDownloaderApp:
             anchor="w",
         ).grid(row=0, column=0, sticky="ew")
 
-        self.title_var = tk.StringVar(value="—")
+        self.title_var = tk.StringVar(value=self.EMPTY_TITLE)
 
         self.video_title_label = tk.Label(
             pad,
@@ -1306,30 +1008,11 @@ class VideoDownloaderApp:
             anchor="w",
             justify="left",
         )
+        self.video_title_label.grid(row=1, column=0, sticky="ew", pady=(4, 0))
 
-        self.video_title_label.grid(
-            row=1,
-            column=0,
-            sticky="ew",
-            pady=(4, 0),
-        )
-
-        # ────────────────────────────────────────────────
         # Progress
-        # ────────────────────────────────────────────────
-
-        progress_frame = tk.Frame(
-            video_frame,
-            bg=COLOR_BG,
-        )
-
-        progress_frame.grid(
-            row=1,
-            column=0,
-            sticky="ew",
-            pady=(18, 0),
-        )
-
+        progress_frame = tk.Frame(video_frame, bg=COLOR_BG)
+        progress_frame.grid(row=1, column=0, sticky="ew", pady=(18, 0))
         progress_frame.grid_columnconfigure(0, weight=1)
 
         self.progress_bar = RoundedProgressBar(
@@ -1339,12 +1022,7 @@ class VideoDownloaderApp:
             track_color=COLOR_SURFACE_ALT,
             fill_color=COLOR_ACCENT,
         )
-
-        self.progress_bar.grid(
-            row=0,
-            column=0,
-            sticky="ew",
-        )
+        self.progress_bar.grid(row=0, column=0, sticky="ew")
 
         self.pct_var = tk.StringVar(value="")
 
@@ -1355,40 +1033,13 @@ class VideoDownloaderApp:
             bg=COLOR_BG,
             fg=COLOR_TEXT_DIM,
             anchor="e",
-        ).grid(
-            row=1,
-            column=0,
-            sticky="ew",
-            pady=(5, 0),
-        )
+        ).grid(row=1, column=0, sticky="ew", pady=(5, 0))
 
-    # 相容於舊有呼叫方式的小 helper
-    def _progress_set(self, value: float) -> None:
-        self.progress_bar.set(value)
+    # ── Status ────────────────────────────────────────────
 
-    # ═════════════════════════════════════════════════════
-    # Status
-    # ═════════════════════════════════════════════════════
-
-    def _build_status_section(
-        self,
-        parent: tk.Frame,
-    ) -> None:
-
-        status_frame = tk.Frame(
-            parent,
-            bg=COLOR_BG,
-        )
-
-        status_frame.grid(
-            row=5,
-            column=0,
-            sticky="ew",
-            pady=(14, 0),
-        )
-
-        parent.grid_rowconfigure(5, weight=0)
-
+    def _build_status_section(self, parent: tk.Frame) -> None:
+        status_frame = tk.Frame(parent, bg=COLOR_BG)
+        status_frame.grid(row=5, column=0, sticky="ew", pady=(14, 0))
         status_frame.grid_columnconfigure(1, weight=1)
 
         self.status_dot_canvas = tk.Canvas(
@@ -1399,12 +1050,7 @@ class VideoDownloaderApp:
             highlightthickness=0,
             bd=0,
         )
-
-        self.status_dot_canvas.grid(
-            row=0,
-            column=0,
-            padx=(2, 8),
-        )
+        self.status_dot_canvas.grid(row=0, column=0, padx=(2, 8))
 
         self._status_dot_item = self.status_dot_canvas.create_oval(
             1,
@@ -1423,27 +1069,16 @@ class VideoDownloaderApp:
             fg=COLOR_TEXT_DIM,
             anchor="w",
         )
-
-        self.status_label.grid(
-            row=0,
-            column=1,
-            sticky="ew",
-        )
+        self.status_label.grid(row=0, column=1, sticky="ew")
 
     # ═════════════════════════════════════════════════════
     # Responsive Resize
     # ═════════════════════════════════════════════════════
 
-    def _on_window_configure(
-        self,
-        event: tk.Event,
-    ) -> None:
+    def _on_window_configure(self, event: tk.Event) -> None:
         """
-        視窗 Resize 時：
-
-          - 動態調整影片名稱 wraplength
-          - 不修改字體大小
-          - 不使用 bitmap scale
+        視窗 Resize 時動態調整影片名稱 wraplength，
+        不修改字體大小、不使用 bitmap scale。
         """
 
         if event.widget is not self.root:
@@ -1451,43 +1086,26 @@ class VideoDownloaderApp:
 
         width = event.width
 
-        if width <= 0:
-            return
-
-        if width == self._last_window_width:
+        if width <= 0 or width == self._last_window_width:
             return
 
         self._last_window_width = width
 
-        wrap_width = max(
-            240,
-            width - 110,
-        )
-
-        try:
-            self.video_title_label.config(wraplength=wrap_width)
-        except tk.TclError:
-            pass
+        with suppress(tk.TclError):
+            self.video_title_label.config(wraplength=max(240, width - 110))
 
     # ═════════════════════════════════════════════════════
     # Version
     # ═════════════════════════════════════════════════════
 
-    def _show_version_info(
-        self,
-    ) -> None:
-
+    def _show_version_info(self) -> None:
         messagebox.showinfo(
             t("version_info"),
             (
-                f"{t('version_title')} "
-                f"v{APP_VERSION}\n\n"
-                f"{t('yt_dlp')} : "
-                f"{YTDLP_VERSION}\n"
-                f"{t('ffmpeg')} : "
-                f"{FFMPEG_VERSION}\n"
-                f"{t('deno')}   : "
-                f"{DENO_VERSION}"
+                f"{t('version_title')} v{APP_VERSION}\n\n"
+                f"{t('yt_dlp')} : {YTDLP_VERSION}\n"
+                f"{t('ffmpeg')} : {FFMPEG_VERSION}\n"
+                f"{t('deno')}   : {DENO_VERSION}"
             ),
         )
 
@@ -1495,10 +1113,9 @@ class VideoDownloaderApp:
     # Context Menu
     # ═════════════════════════════════════════════════════
 
-    def _bind_entry_context_menu(
-        self,
-        entry: tk.Entry,
-    ) -> None:
+    def _bind_entry_context_menu(self, entry: tk.Entry) -> None:
+        # 選單項目 index（含 separator 佔用 index 3）
+        cut_i, copy_i, paste_i, select_all_i, clear_i = 0, 1, 2, 4, 5
 
         menu = tk.Menu(
             entry,
@@ -1511,178 +1128,65 @@ class VideoDownloaderApp:
             bd=1,
         )
 
-        # ────────────────────────────────────────────────
-        # Cut
-        # ────────────────────────────────────────────────
+        def is_editable() -> bool:
+            return str(entry["state"]) != "disabled"
 
-        def do_cut():
-            if entry["state"] == "disabled":
-                return
+        def do_cut() -> None:
+            if is_editable():
+                with suppress(tk.TclError):
+                    entry.event_generate("<<Cut>>")
 
-            try:
-                entry.event_generate("<<Cut>>")
-            except tk.TclError:
-                pass
-
-        # ────────────────────────────────────────────────
-        # Copy
-        # ────────────────────────────────────────────────
-
-        def do_copy():
-
-            try:
+        def do_copy() -> None:
+            with suppress(tk.TclError):
                 entry.event_generate("<<Copy>>")
-            except tk.TclError:
-                pass
 
-        # ────────────────────────────────────────────────
-        # Paste
-        # ────────────────────────────────────────────────
-
-        def do_paste():
-
-            if entry["state"] == "disabled":
+        def do_paste() -> None:
+            if not is_editable():
                 return
 
-            try:
-                try:
-                    entry.delete(
-                        tk.SEL_FIRST,
-                        tk.SEL_LAST,
-                    )
-                except tk.TclError:
-                    pass
+            with suppress(tk.TclError):
+                with suppress(tk.TclError):
+                    entry.delete(tk.SEL_FIRST, tk.SEL_LAST)
 
-                entry.insert(
-                    tk.INSERT,
-                    self.root.clipboard_get(),
-                )
+                entry.insert(tk.INSERT, self.root.clipboard_get())
 
-            except tk.TclError:
-                pass
-
-        # ────────────────────────────────────────────────
-        # Select All
-        # ────────────────────────────────────────────────
-
-        def do_select_all():
-
-            entry.select_range(
-                0,
-                tk.END,
-            )
-
+        def do_select_all() -> None:
+            entry.select_range(0, tk.END)
             entry.icursor(tk.END)
 
-        # ────────────────────────────────────────────────
-        # Clear
-        # ────────────────────────────────────────────────
+        def do_clear() -> None:
+            if is_editable():
+                entry.delete(0, tk.END)
 
-        def do_clear():
-
-            if entry["state"] == "disabled":
-                return
-
-            entry.delete(
-                0,
-                tk.END,
-            )
-
-        # ────────────────────────────────────────────────
-        # Menu items
-        # ────────────────────────────────────────────────
-
-        menu.add_command(
-            label=t("ctx_cut"),
-            command=do_cut,
-        )
-
-        menu.add_command(
-            label=t("ctx_copy"),
-            command=do_copy,
-        )
-
-        menu.add_command(
-            label=t("ctx_paste"),
-            command=do_paste,
-        )
-
+        menu.add_command(label=t("ctx_cut"), command=do_cut)
+        menu.add_command(label=t("ctx_copy"), command=do_copy)
+        menu.add_command(label=t("ctx_paste"), command=do_paste)
         menu.add_separator()
+        menu.add_command(label=t("ctx_select_all"), command=do_select_all)
+        menu.add_command(label=t("ctx_clear"), command=do_clear)
 
-        menu.add_command(
-            label=t("ctx_select_all"),
-            command=do_select_all,
-        )
-
-        menu.add_command(
-            label=t("ctx_clear"),
-            command=do_clear,
-        )
-
-        # ────────────────────────────────────────────────
-        # Popup
-        # ────────────────────────────────────────────────
-
-        def show_menu(
-            event: tk.Event,
-        ) -> None:
-
-            editable = entry["state"] != "disabled"
-
-            write_state = "normal" if editable else "disabled"
-
-            menu.entryconfig(
-                t("ctx_cut"),
-                state=write_state,
-            )
-
-            menu.entryconfig(
-                t("ctx_paste"),
-                state=write_state,
-            )
-
-            menu.entryconfig(
-                t("ctx_clear"),
-                state=write_state,
-            )
-
+        def show_menu(event: tk.Event) -> None:
+            editable = is_editable()
             has_selection = entry.selection_present()
 
-            if not has_selection:
-                menu.entryconfig(
-                    t("ctx_cut"),
-                    state="disabled",
-                )
+            def state(enabled: bool) -> str:
+                return "normal" if enabled else "disabled"
 
-                menu.entryconfig(
-                    t("ctx_copy"),
-                    state="disabled",
-                )
+            menu.entryconfig(cut_i, state=state(editable and has_selection))
+            menu.entryconfig(copy_i, state=state(has_selection))
+            menu.entryconfig(paste_i, state=state(editable))
+            menu.entryconfig(select_all_i, state="normal")
+            menu.entryconfig(clear_i, state=state(editable))
 
-            else:
-                menu.entryconfig(
-                    t("ctx_copy"),
-                    state="normal",
-                )
+            menu.tk_popup(event.x_root, event.y_root)
 
-            menu.tk_popup(
-                event.x_root,
-                event.y_root,
-            )
+        entry.bind("<Button-3>", show_menu)
 
-        entry.bind(
-            "<Button-3>",
-            show_menu,
-        )
-
-        if sys.platform == "darwin":
-            entry.bind(
-                "<Button-2>",
-                show_menu,
-            )
+        if IS_MAC:
+            entry.bind("<Button-2>", show_menu)
 
     # ═════════════════════════════════════════════════════
-    # Status
+    # UI State helpers
     # ═════════════════════════════════════════════════════
 
     def _set_status(
@@ -1690,117 +1194,44 @@ class VideoDownloaderApp:
         text: str,
         dot_color: str = COLOR_TEXT_DIM,
     ) -> None:
-
         self.status_label.config(text=text)
+        self.status_dot_canvas.itemconfig(self._status_dot_item, fill=dot_color)
 
-        self.status_dot_canvas.itemconfig(
-            self._status_dot_item,
-            fill=dot_color,
-        )
+    def _set_title_display(self, title: str) -> None:
+        self.title_var.set(title or self.EMPTY_TITLE)
 
-    def _set_title_display(
-        self,
-        title: str,
-    ) -> None:
-
-        self.title_var.set(title if title else "—")
-
-    def _set_downloading(
-        self,
-        downloading: bool,
-    ) -> None:
-
-        entry_state = "disabled" if downloading else "normal"
-
-        download_state = "disabled" if downloading else "normal"
-
-        cancel_state = "normal" if downloading else "disabled"
-
-        self.entry.config(state=entry_state)
-
-        self.btn_download.config(state=download_state)
-
-        self.btn_cancel.config(state=cancel_state)
+    def _set_downloading(self, downloading: bool) -> None:
+        self.entry.config(state="disabled" if downloading else "normal")
+        self.btn_download.set_enabled(not downloading)
+        self.btn_cancel.set_enabled(downloading)
 
         if not downloading:
             self.progress_bar.set(0)
-
             self.pct_var.set("")
 
     # ═════════════════════════════════════════════════════
     # Download
     # ═════════════════════════════════════════════════════
 
-    def _on_download(self) -> None:
+    def _build_args(
+        self,
+        url: str,
+        yt_dlp: Path,
+        ffmpeg: Path,
+        output_dir: Path,
+    ) -> list[str]:
+        """
+        組合 yt-dlp 參數。URL 一律放在 "--" 之後，
+        避免以 "-" 開頭的輸入被當成選項。
+        """
 
-        url = self.entry.get().strip()
-
-        if not url:
-            messagebox.showwarning(
-                "錯誤",
-                t("empty_url"),
-            )
-
-            return
-
-        yt_dlp = get_tool_path("yt-dlp")
-
-        ffmpeg = get_tool_path("ffmpeg")
-
-        if not yt_dlp:
-            messagebox.showerror(
-                "錯誤",
-                t("yt_dlp_missing"),
-            )
-
-            return
-
-        if not ffmpeg:
-            messagebox.showerror(
-                "錯誤",
-                t("ffmpeg_missing"),
-            )
-
-            return
-
-        # deno optional
-        deno = get_tool_path("deno")
-
-        if not deno:
-            messagebox.showwarning(
-                "提示",
-                t("deno_missing"),
-            )
-
-        # ────────────────────────────────────────────────
-        # Reset state
-        # ────────────────────────────────────────────────
-
-        self._cancelled = False
-
-        self._set_downloading(True)
-
-        self._set_title_display("")
-
-        self._set_status(
-            t("fetching_formats"),
-            COLOR_WARNING,
-        )
-
-        output_dir = Path(sys.argv[0]).resolve().parent
-
-        # ────────────────────────────────────────────────
-        # yt-dlp arguments
-        # ────────────────────────────────────────────────
-
-        args = [
+        return [
             str(yt_dlp),
             "-o",
             str(output_dir / "%(title).80B [%(id)s].%(ext)s"),
             "-f",
-            ("bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b"),
+            "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b",
             "--windows-filenames",
-            url,
             "--no-playlist",
             "--user-agent",
             (
@@ -1816,236 +1247,205 @@ class VideoDownloaderApp:
             "--ffmpeg-location",
             str(ffmpeg.parent),
             "--newline",
+            "--",
+            url,
         ]
+
+    def _on_download(self) -> None:
+        # 下載進行中（Return 鍵也會觸發）時忽略
+        if self._process and self._process.poll() is None:
+            return
+
+        url = self.entry.get().strip()
+
+        if not url:
+            messagebox.showwarning("錯誤", t("empty_url"))
+            return
+
+        yt_dlp = get_tool_path("yt-dlp")
+        ffmpeg = get_tool_path("ffmpeg")
+
+        if not yt_dlp:
+            messagebox.showerror("錯誤", t("yt_dlp_missing"))
+            return
+
+        if not ffmpeg:
+            messagebox.showerror("錯誤", t("ffmpeg_missing"))
+            return
+
+        # deno optional
+        if not get_tool_path("deno"):
+            messagebox.showwarning("提示", t("deno_missing"))
+
+        # ── Reset state ─────────────────────────────────
+        self._job_id += 1
+        self._cancel_event = threading.Event()
+
+        self._set_downloading(True)
+        self._set_title_display("")
+        self._set_status(t("fetching_formats"), COLOR_WARNING)
+
+        output_dir = get_app_dir()
+        args = self._build_args(url, yt_dlp, ffmpeg, output_dir)
 
         threading.Thread(
             target=self._run_download,
-            args=(
-                args,
-                output_dir,
-            ),
+            args=(self._job_id, self._cancel_event, args, output_dir),
             daemon=True,
         ).start()
 
-    # ═════════════════════════════════════════════════════
-    # Cancel
-    # ═════════════════════════════════════════════════════
+    def _terminate_process(self) -> None:
+        proc = self._process
+
+        if proc and proc.poll() is None:
+            with suppress(Exception):
+                proc.terminate()
 
     def _on_cancel(self) -> None:
+        self._cancel_event.set()
 
-        self._cancelled = True
+        # 讓舊 job 之後送出的事件全部失效
+        self._job_id += 1
 
-        if self._process and self._process.poll() is None:
-            try:
-                self._process.terminate()
-            except Exception:
-                pass
+        self._terminate_process()
 
-        self._set_status(
-            t("cancelled"),
-            COLOR_WARNING,
-        )
-
+        self._set_status(t("cancelled"), COLOR_WARNING)
         self._set_downloading(False)
 
     # ═════════════════════════════════════════════════════
-    # Download Worker
+    # Download Worker（背景執行緒：不可碰 Tk）
     # ═════════════════════════════════════════════════════
 
     def _run_download(
         self,
+        job: int,
+        cancel: threading.Event,
         args: list[str],
         output_dir: Path,
     ) -> None:
+        def post(kind: str, data: Any = None) -> None:
+            self._events.put(_Event(job, kind, data))
 
-        log_lines: list[str] = []
+        log_lines: deque[str] = deque(maxlen=self.MAX_LOG_LINES)
 
-        # Windows：
-        # 不顯示 console 視窗。
-        creationflags = 0x08000000 if sys.platform.startswith("win") else 0
-
-        sys_encoding = locale.getpreferredencoding(False)
+        # Windows：不顯示 console 視窗。
+        creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
         child_env = os.environ.copy()
 
-        # 避免 subprocess inherited UTF-8
-        # 導致 Windows 編碼錯誤。
-        child_env.pop(
-            "PYTHONUTF8",
-            None,
-        )
-
-        child_env.pop(
-            "PYTHONIOENCODING",
-            None,
-        )
+        # 避免 subprocess inherited UTF-8 導致 Windows 編碼錯誤。
+        child_env.pop("PYTHONUTF8", None)
+        child_env.pop("PYTHONIOENCODING", None)
 
         try:
-            self._process = subprocess.Popen(
+            proc = subprocess.Popen(
                 args,
                 stdout=subprocess.PIPE,
                 stderr=subprocess.STDOUT,
                 text=True,
-                encoding=sys_encoding,
+                encoding=locale.getencoding(),
                 errors="replace",
-                cwd=str(output_dir),
+                cwd=output_dir,
                 env=child_env,
                 creationflags=creationflags,
             )
-
         except Exception as exc:
-            self.root.after(
-                0,
-                self._on_failure,
-                str(exc),
-            )
-
+            post("failure", str(exc))
             return
 
-        assert self._process.stdout is not None
+        self._process = proc
 
-        # ────────────────────────────────────────────────
-        # Read stdout
-        # ────────────────────────────────────────────────
+        with proc:
+            # 在 Popen 完成前就按下取消的情況
+            if cancel.is_set():
+                proc.terminate()
 
-        for line in self._process.stdout:
-            if self._cancelled:
-                break
+            title_seen = False
 
-            log_lines.append(line)
+            assert proc.stdout is not None
 
-            if len(log_lines) > self.MAX_LOG_LINES:
-                log_lines.pop(0)
+            for line in proc.stdout:
+                if cancel.is_set():
+                    break
 
-            # ────────────────────────────────────────
-            # title
-            # ────────────────────────────────────────
+                log_lines.append(line)
 
-            title = parse_title(line)
+                if not title_seen and (title := parse_title(line)):
+                    title_seen = True
+                    post("title", title)
 
-            if title and self.title_var.get() == "—":
-                self.root.after(
-                    0,
-                    self._set_title_display,
-                    title,
-                )
+                if (pct := parse_progress(line)) is not None:
+                    post("progress", pct)
 
-            # ────────────────────────────────────────
-            # progress
-            # ────────────────────────────────────────
+            if cancel.is_set():
+                return  # __exit__ 會等待已被 terminate 的行程結束
 
-            pct = parse_progress(line)
-
-            if pct is not None:
-                self.root.after(
-                    0,
-                    self._progress_set,
-                    pct,
-                )
-
-                self.root.after(
-                    0,
-                    self.pct_var.set,
-                    f"{pct:.1f}%",
-                )
-
-                self.root.after(
-                    0,
-                    self._set_status,
-                    t("downloading"),
-                    COLOR_ACCENT,
-                )
-
-        # 等待 process 完整結束
-        if self._process.poll() is None:
-            try:
-                self._process.wait()
-            except Exception:
-                pass
-
-        returncode = self._process.returncode
-
-        if self._cancelled:
-            return
+            returncode = proc.wait()
 
         if returncode == 0:
-            self.root.after(
-                0,
-                self._on_success,
-                output_dir,
-            )
-
+            post("success", output_dir)
         else:
-            error_text = "".join(log_lines).strip()
-
-            if not error_text:
-                error_text = t("download_failed")
-
-            self.root.after(
-                0,
-                self._on_failure,
-                error_text,
-            )
+            post("failure", "".join(log_lines).strip() or t("download_failed"))
 
     # ═════════════════════════════════════════════════════
-    # Success
+    # 事件輪詢（主執行緒）
     # ═════════════════════════════════════════════════════
 
-    def _on_success(
-        self,
-        output_dir: Path,
-    ) -> None:
+    def _poll_events(self) -> None:
+        try:
+            while True:
+                event = self._events.get_nowait()
 
+                if event.job == self._job_id:
+                    self._handle_event(event)
+        except queue.Empty:
+            pass
+
+        self._poll_after_id = self.root.after(POLL_INTERVAL_MS, self._poll_events)
+
+    def _handle_event(self, event: _Event) -> None:
+        match event.kind:
+            case "title":
+                self._set_title_display(event.data)
+
+            case "progress":
+                pct: float = event.data
+                self.progress_bar.set(pct)
+                self.pct_var.set(f"{pct:.1f}%")
+                self._set_status(t("downloading"), COLOR_ACCENT)
+
+            case "success":
+                self._on_success(event.data)
+
+            case "failure":
+                self._on_failure(event.data)
+
+    def _on_success(self, output_dir: Path) -> None:
         self.progress_bar.set(100)
-
         self.pct_var.set("100%")
 
-        self._set_status(
-            t("download_success"),
-            COLOR_SUCCESS,
-        )
-
+        self._set_status(t("download_success"), COLOR_SUCCESS)
         self._set_downloading(False)
 
         open_directory(output_dir)
 
-    # ═════════════════════════════════════════════════════
-    # Failure
-    # ═════════════════════════════════════════════════════
-
-    def _on_failure(
-        self,
-        err: str,
-    ) -> None:
-
-        self._set_status(
-            t("download_failed"),
-            COLOR_DANGER,
-        )
-
+    def _on_failure(self, err: str) -> None:
+        self._set_status(t("download_failed"), COLOR_DANGER)
         self._set_downloading(False)
 
-        messagebox.showerror(
-            "yt-dlp 錯誤",
-            err,
-        )
+        messagebox.showerror("yt-dlp 錯誤", err)
 
     # ═════════════════════════════════════════════════════
     # Close
     # ═════════════════════════════════════════════════════
 
     def _on_close(self) -> None:
+        # 視窗關閉時，如果還在下載，先終止 yt-dlp。
+        self._cancel_event.set()
+        self._terminate_process()
 
-        # 視窗關閉時，如果還在下載，
-        # 先終止 yt-dlp。
-
-        if self._process and self._process.poll() is None:
-            try:
-                self._process.terminate()
-            except Exception:
-                pass
-
-        self._cancelled = True
+        if self._poll_after_id is not None:
+            self.root.after_cancel(self._poll_after_id)
 
         self.root.destroy()
 
