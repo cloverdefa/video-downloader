@@ -16,7 +16,7 @@
 
 ## 下載與使用
 
-前往 **[GitHub Releases](https://github.com/cloverdefa/video-downloader/releases/latest)** 下載最新的 `video_downloader.exe`，並在 Windows 上執行。Release 執行檔已內嵌 yt-dlp、FFmpeg 和 Deno，不必另外安裝 Python 或這些工具。
+前往 **[GitHub Releases](https://github.com/cloverdefa/video-downloader/releases/latest)** 下載最新的 `video_downloader.exe`，並在 Windows 上執行。Release 執行檔已內嵌 yt-dlp、FFmpeg 和 Deno，不必另外安裝執行環境或這些工具。
 
 1. 開啟 `video_downloader.exe`。
 2. 在「影片網址」欄貼上網址，按「開始下載」或 Enter。
