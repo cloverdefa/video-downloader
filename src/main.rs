@@ -19,7 +19,7 @@ mod embedded {
 }
 
 #[derive(Debug)]
-enum Event { Title(String), Progress(f32), Finished(Result<(), String>) }
+enum Event { Title(String), Progress(f32), Log(String), Finished(Result<(), String>) }
 
 struct DownloaderApp {
     url: String,
@@ -31,6 +31,7 @@ struct DownloaderApp {
     rx: Receiver<Event>,
     tx: Sender<Event>,
     error: Option<String>,
+    logs: Vec<String>,
     versions_open: bool,
     versions: String,
 }
@@ -38,7 +39,7 @@ struct DownloaderApp {
 impl Default for DownloaderApp {
     fn default() -> Self {
         let (tx, rx) = mpsc::channel();
-        Self { url: String::new(), title: String::new(), status: "貼上影片網址即可開始下載".into(), progress: 0.0, busy: false, child: None, rx, tx, error: None, versions_open: false,
+        Self { url: String::new(), title: String::new(), status: "貼上影片網址即可開始下載".into(), progress: 0.0, busy: false, child: None, rx, tx, error: None, logs: Vec::new(), versions_open: false,
             versions: format!("影片下載器 v{}\nyt-dlp：{}\nFFmpeg：{}\nDeno：{}", embedded::APP_VERSION, tool_version("yt-dlp"), tool_version("ffmpeg"), tool_version("deno")) }
     }
 }
@@ -57,16 +58,21 @@ impl DownloaderApp {
         let mut args = vec!["-o".into(), output.join("%(title).80B [%(id)s].%(ext)s").to_string_lossy().into_owned(), "-f".into(), "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b".into(), "--windows-filenames".into(), "--no-playlist".into(), "--user-agent".into(), "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36".into(), "--referer".into(), url.clone(), "--ffmpeg-location".into(), ffmpeg_dir.to_string_lossy().into_owned()];
         if let Some(deno) = deno { args.extend(["--js-runtimes".into(), format!("deno:{}", deno.display())]); }
         args.extend(["--newline".into(), "--".into(), url]);
-        self.title.clear(); self.progress = 0.0; self.status = "正在解析影片資訊…".into(); self.busy = true;
+        self.title.clear(); self.progress = 0.0; self.logs.clear(); self.status = "正在解析影片資訊…".into(); self.busy = true;
         let tx = self.tx.clone();
         let mut command = Command::new(ytdlp);
-        command.args(args).current_dir(&output).stdout(Stdio::piped()).stderr(Stdio::stdout());
+        command.args(args).current_dir(&output).stdout(Stdio::piped()).stderr(Stdio::piped());
         #[cfg(windows)] command.creation_flags(0x08000000);
         match command.spawn() {
             Ok(mut child) => {
-                if let Some(stdout) = child.stdout.take() { thread::spawn(move || for line in BufReader::new(stdout).lines().map_while(Result::ok) {
+                if let Some(stdout) = child.stdout.take() { let tx = tx.clone(); thread::spawn(move || for line in BufReader::new(stdout).lines().map_while(Result::ok) {
                     if let Some(rest) = line.strip_prefix("[download] Destination: ").or_else(|| line.strip_prefix("Destination: ")) { let title = Path::new(rest.trim()).file_stem().unwrap_or_default().to_string_lossy().into_owned(); let _ = tx.send(Event::Title(title)); }
                     if let Some(pct) = line.find('%').and_then(|i| line[..i].split_whitespace().last()).and_then(|s| s.parse::<f32>().ok()) { let _ = tx.send(Event::Progress(pct.clamp(0.0, 100.0))); }
+                }); }
+                if let Some(stderr) = child.stderr.take() { let tx = self.tx.clone(); thread::spawn(move || for line in BufReader::new(stderr).lines().map_while(Result::ok) {
+                    if let Some(rest) = line.strip_prefix("[download] Destination: ").or_else(|| line.strip_prefix("Destination: ")) { let title = Path::new(rest.trim()).file_stem().unwrap_or_default().to_string_lossy().into_owned(); let _ = tx.send(Event::Title(title)); }
+                    if let Some(pct) = line.find('%').and_then(|i| line[..i].split_whitespace().last()).and_then(|s| s.parse::<f32>().ok()) { let _ = tx.send(Event::Progress(pct.clamp(0.0, 100.0))); }
+                    let _ = tx.send(Event::Log(line.chars().take(500).collect()));
                 }); }
                 self.child = Some(child);
             }
@@ -80,17 +86,20 @@ impl DownloaderApp {
     }
 
     fn poll(&mut self) {
-        while let Ok(event) = self.rx.try_recv() { match event { Event::Title(t) => self.title = t, Event::Progress(p) => { self.progress = p; self.status = "正在下載…".into(); }, Event::Finished(r) => { self.busy = false; self.child = None; match r { Ok(()) => { self.progress = 100.0; self.status = "下載完成".into(); open_directory(&app_dir()); }, Err(e) => { self.status = "下載失敗".into(); self.error = Some(e); } } } } }
+        while let Ok(event) = self.rx.try_recv() { match event { Event::Title(t) => self.title = t, Event::Progress(p) => { self.progress = p; self.status = "正在下載…".into(); }, Event::Log(line) => { if self.logs.len() == 12 { self.logs.remove(0); } self.logs.push(line); }, Event::Finished(r) => { self.busy = false; self.child = None; match r { Ok(()) => { self.progress = 100.0; self.status = "下載完成".into(); open_directory(&app_dir()); }, Err(e) => { self.status = "下載失敗".into(); let details = self.logs.join("\n"); self.error = Some(if details.is_empty() { e } else { format!("{e}\n\n{details}") }); } } } } }
         if let Some(child) = &mut self.child { if let Ok(Some(status)) = child.try_wait() { let success = status.success(); let _ = self.tx.send(Event::Finished(if success { Ok(()) } else { Err("yt-dlp 執行失敗，請檢查網址或錯誤訊息。".into()) })); } }
     }
 }
 
 impl eframe::App for DownloaderApp {
-    fn update(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
+    fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
         ctx.request_repaint_after(Duration::from_millis(120));
-        let mut style = (*ctx.style()).clone(); style.visuals = egui::Visuals::dark(); ctx.set_style(style);
-        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::from_rgb(17, 19, 24)).inner_margin(egui::Margin::same(26))).show(ctx, |ui| {
+    }
+
+    fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
+        let ctx = ui.ctx().clone();
+        egui::CentralPanel::default().frame(egui::Frame::NONE.fill(Color32::from_rgb(17, 19, 24)).inner_margin(egui::Margin::same(26))).show(ui, |ui| {
             ui.set_max_width(620.0);
             ui.horizontal(|ui| { ui.heading(RichText::new("影片下載器").size(25.0).strong()); if ui.small_button(format!("v{}　版本資訊", embedded::APP_VERSION)).clicked() { self.versions_open = true; } });
             ui.add_space(20.0);
@@ -98,7 +107,7 @@ impl eframe::App for DownloaderApp {
             let entry = ui.add_enabled(!self.busy, egui::TextEdit::singleline(&mut self.url).hint_text("https://…").desired_width(f32::INFINITY));
             if entry.lost_focus() && ui.input(|i| i.key_pressed(egui::Key::Enter)) && !self.busy { self.start(); }
             ui.add_space(12.0);
-            ui.horizontal(|ui| { if ui.add_enabled(!self.busy, egui::Button::new("開始下載").min_size([115.0, 36.0])).clicked() { self.start(); } if ui.add_enabled(self.busy, egui::Button::new("取消").min_size([85.0, 36.0])).clicked() { self.cancel(); } });
+            ui.horizontal(|ui| { if ui.add_enabled(!self.busy, egui::Button::new("開始下載").min_size(egui::vec2(115.0, 36.0))).clicked() { self.start(); } if ui.add_enabled(self.busy, egui::Button::new("取消").min_size(egui::vec2(85.0, 36.0))).clicked() { self.cancel(); } });
             ui.add_space(22.0);
             ui.label(RichText::new("影片").color(Color32::from_rgb(174, 184, 201)));
             ui.label(if self.title.is_empty() { "等待影片資訊…" } else { &self.title });
@@ -106,8 +115,9 @@ impl eframe::App for DownloaderApp {
             ui.add(egui::ProgressBar::new(self.progress / 100.0).text(if self.busy { format!("{:.1}%", self.progress) } else { String::new() }));
             ui.add_space(8.0); ui.label(RichText::new(&self.status).color(Color32::from_rgb(91, 166, 255)));
         });
-        if self.versions_open { egui::Window::new("版本資訊").open(&mut self.versions_open).show(ctx, |ui| { ui.label(&self.versions); }); }
-        if let Some(message) = self.error.clone() { let mut open = true; egui::Window::new("提示").collapsible(false).resizable(false).open(&mut open).show(ctx, |ui| { ui.label(message); if ui.button("確定").clicked() { self.error = None; } }); if !open { self.error = None; } }
+        ctx.set_theme(egui::Theme::Dark);
+        if self.versions_open { egui::Window::new("版本資訊").open(&mut self.versions_open).show(&ctx, |ui| { ui.label(&self.versions); }); }
+        if let Some(message) = self.error.clone() { let mut open = true; egui::Window::new("提示").collapsible(false).resizable(false).open(&mut open).show(&ctx, |ui| { ui.label(message); if ui.button("確定").clicked() { self.error = None; } }); if !open { self.error = None; } }
     }
 }
 
@@ -136,5 +146,5 @@ fn open_directory(path: &Path) { #[cfg(windows)] { let _ = Command::new("explore
 
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions { viewport: egui::ViewportBuilder::default().with_inner_size([680.0, 430.0]).with_min_inner_size([480.0, 360.0]).with_title("影片下載器"), ..Default::default() };
-    eframe::run_native("影片下載器", options, Box::new(|_| Ok(Box::<DownloaderApp>::default())))
+    eframe::run_native("影片下載器", options, Box::new(|cc| { cc.egui_ctx.set_theme(egui::Theme::Dark); Ok(Box::<DownloaderApp>::default()) }))
 }
