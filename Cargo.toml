@@ -6,7 +6,7 @@ build = "build.rs"
 
 [dependencies]
 arboard = "3.7"
-eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "system_fonts", "clipboard"] }
+eframe = { version = "0.37", default-features = false, features = ["default_fonts", "glow", "system_fonts", "clipboard", "x11", "wayland"] }
 
 [build-dependencies]
 
