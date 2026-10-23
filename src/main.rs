@@ -113,7 +113,7 @@ impl DownloaderApp {
                 Some("找不到 Deno；YouTube 的可用格式或畫質可能受限。下載仍會繼續。".into());
         }
 
-        let output = app_dir();
+        let output = download_dir();
         let ffmpeg_dir = ffmpeg.parent().unwrap_or(Path::new("."));
 
         let mut args = vec![
@@ -251,7 +251,7 @@ impl DownloaderApp {
                         Ok(()) => {
                             self.progress = 100.0;
                             self.status = "下載完成".into();
-                            open_directory(&app_dir());
+                            open_directory(&download_dir());
                         }
 
                         Err(error) => {
@@ -770,6 +770,19 @@ fn app_dir() -> PathBuf {
         .and_then(|path| path.parent().map(Path::to_path_buf))
         .or_else(|| env::current_dir().ok())
         .unwrap_or_default()
+}
+
+fn download_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    if let Some(downloads_dir) = env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Downloads"))
+        .filter(|path| path.is_dir())
+    {
+        return downloads_dir;
+    }
+
+    app_dir()
 }
 
 fn tool_path(name: &str) -> Option<PathBuf> {
