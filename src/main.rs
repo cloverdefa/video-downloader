@@ -569,12 +569,20 @@ fn tool_version(name: &str) -> String {
 
             command.output().ok()
         })
-        .map(|output| {
-            String::from_utf8_lossy(&output.stdout)
+        .and_then(|output| {
+            // FFmpeg 主要將版本資訊寫入 stderr；
+            // yt-dlp 與 Deno 通常則可從 stdout 取得。
+            let stdout = String::from_utf8_lossy(&output.stdout);
+            let stderr = String::from_utf8_lossy(&output.stderr);
+
+            stdout
                 .lines()
-                .next()
-                .unwrap_or("unknown")
-                .to_owned()
+                .chain(stderr.lines())
+                .find(|line| {
+                    let line = line.trim();
+                    !line.is_empty()
+                })
+                .map(str::to_owned)
         })
         .unwrap_or_else(|| "missing".into())
 }
