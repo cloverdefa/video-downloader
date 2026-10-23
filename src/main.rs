@@ -345,6 +345,12 @@ impl eframe::App for DownloaderApp {
 
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
+        let viewport_size = ui.available_size();
+        let scale = (viewport_size.x / 720.0)
+            .min(viewport_size.y / 540.0)
+            .clamp(0.62, 1.25);
+        let outer_margin = (30.0 * scale).round() as i8;
+        let card_margin = (20.0 * scale).round() as i8;
 
         let accent = Color32::from_rgb(45, 183, 211);
         let muted = Color32::from_rgb(151, 164, 183);
@@ -368,16 +374,20 @@ impl eframe::App for DownloaderApp {
             .frame(
                 egui::Frame::NONE
                     .fill(background)
-                    .inner_margin(egui::Margin::same(30)),
+                    .inner_margin(egui::Margin::same(outer_margin)),
             )
             .show(ui, |ui| {
                 ui.vertical_centered(|ui| {
-                    ui.set_max_width(700.0);
+                    ui.set_max_width(900.0);
 
                     ui.horizontal(|ui| {
                         ui.vertical(|ui| {
-                            ui.heading(RichText::new("影片下載器").size(27.0).strong());
-                            ui.label(RichText::new("貼上連結，快速下載影片或音訊").color(muted));
+                            ui.heading(RichText::new("影片下載器").size(27.0 * scale).strong());
+                            ui.label(
+                                RichText::new("貼上連結，快速下載影片或音訊")
+                                    .size(14.0 * scale)
+                                    .color(muted),
+                            );
                         });
 
                         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
@@ -390,22 +400,23 @@ impl eframe::App for DownloaderApp {
                         });
                     });
 
-                    ui.add_space(24.0);
+                    ui.add_space(24.0 * scale);
 
                     egui::Frame::NONE
                         .fill(surface)
                         .stroke(egui::Stroke::new(1.0, Color32::from_rgb(42, 51, 66)))
-                        .inner_margin(egui::Margin::same(20))
+                        .inner_margin(egui::Margin::same(card_margin))
                         .show(ui, |ui| {
-                            ui.label(RichText::new("影片網址").strong());
-                            ui.add_space(6.0);
+                            ui.label(RichText::new("影片網址").size(16.0 * scale).strong());
+                            ui.add_space(6.0 * scale);
 
                             let entry = ui.add_enabled(
                                 !self.busy,
                                 egui::TextEdit::singleline(&mut self.url)
                                     .hint_text("https://www.youtube.com/watch?v=…")
+                                    .font(egui::FontId::proportional(14.0 * scale))
                                     .desired_width(f32::INFINITY)
-                                    .margin(egui::vec2(12.0, 12.0)),
+                                    .margin(egui::vec2(12.0 * scale, 12.0 * scale)),
                             );
 
                             entry.context_menu(|ui| {
@@ -426,12 +437,13 @@ impl eframe::App for DownloaderApp {
                             ui.label(
                                 RichText::new("提示：在網址欄按右鍵可貼上剪貼簿內容")
                                     .small()
+                                    .size(12.0 * scale)
                                     .color(muted),
                             );
 
-                            ui.add_space(18.0);
-                            ui.label(RichText::new("下載類型").strong());
-                            ui.add_space(4.0);
+                            ui.add_space(18.0 * scale);
+                            ui.label(RichText::new("下載類型").size(16.0 * scale).strong());
+                            ui.add_space(4.0 * scale);
 
                             ui.horizontal(|ui| {
                                 ui.add_enabled_ui(!self.busy, |ui| {
@@ -441,7 +453,7 @@ impl eframe::App for DownloaderApp {
                                     if ui
                                         .add(
                                             egui::Button::new("影片　MP4")
-                                                .min_size(egui::vec2(132.0, 38.0))
+                                                .min_size(egui::vec2(132.0 * scale, 38.0 * scale))
                                                 .fill(if video_selected {
                                                     Color32::from_rgb(31, 112, 137)
                                                 } else {
@@ -464,7 +476,7 @@ impl eframe::App for DownloaderApp {
                                     if ui
                                         .add(
                                             egui::Button::new("音樂　MP3")
-                                                .min_size(egui::vec2(132.0, 38.0))
+                                                .min_size(egui::vec2(132.0 * scale, 38.0 * scale))
                                                 .fill(if audio_selected {
                                                     Color32::from_rgb(31, 112, 137)
                                                 } else {
@@ -493,15 +505,17 @@ impl eframe::App for DownloaderApp {
                                 self.start();
                             }
 
-                            ui.add_space(20.0);
+                            ui.add_space(20.0 * scale);
 
                             ui.horizontal(|ui| {
                                 if ui
                                     .add_enabled(
                                         !self.busy,
-                                        egui::Button::new(RichText::new("開始下載").strong())
-                                            .fill(accent)
-                                            .min_size(egui::vec2(170.0, 46.0)),
+                                        egui::Button::new(
+                                            RichText::new("開始下載").size(16.0 * scale).strong(),
+                                        )
+                                        .fill(accent)
+                                        .min_size(egui::vec2(170.0 * scale, 46.0 * scale)),
                                     )
                                     .clicked()
                                 {
@@ -511,8 +525,10 @@ impl eframe::App for DownloaderApp {
                                 if ui
                                     .add_enabled(
                                         self.busy,
-                                        egui::Button::new("取消下載")
-                                            .min_size(egui::vec2(110.0, 46.0)),
+                                        egui::Button::new(
+                                            RichText::new("取消下載").size(15.0 * scale),
+                                        )
+                                        .min_size(egui::vec2(110.0 * scale, 46.0 * scale)),
                                     )
                                     .clicked()
                                 {
@@ -521,12 +537,12 @@ impl eframe::App for DownloaderApp {
                             });
                         });
 
-                    ui.add_space(16.0);
+                    ui.add_space(16.0 * scale);
 
                     egui::Frame::NONE
                         .fill(Color32::from_rgb(19, 25, 35))
                         .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 45, 59)))
-                        .inner_margin(egui::Margin::same(20))
+                        .inner_margin(egui::Margin::same(card_margin))
                         .show(ui, |ui| {
                             ui.horizontal(|ui| {
                                 ui.label(
@@ -534,38 +550,45 @@ impl eframe::App for DownloaderApp {
                                         DownloadMode::Video => "下載影片",
                                         DownloadMode::Audio => "下載音樂",
                                     })
+                                    .size(16.0 * scale)
                                     .strong(),
                                 );
                                 ui.with_layout(
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
-                                        ui.label(RichText::new(&self.status).color(accent));
+                                        ui.label(
+                                            RichText::new(&self.status)
+                                                .size(14.0 * scale)
+                                                .color(accent),
+                                        );
                                     },
                                 );
                             });
 
-                            ui.add_space(8.0);
+                            ui.add_space(8.0 * scale);
                             ui.label(
                                 RichText::new(if self.title.is_empty() {
                                     "等待影片資訊…"
                                 } else {
                                     &self.title
                                 })
+                                .size(15.0 * scale)
                                 .color(if self.title.is_empty() {
                                     muted
                                 } else {
                                     Color32::from_rgb(218, 226, 238)
                                 }),
                             );
-                            ui.add_space(12.0);
+                            ui.add_space(12.0 * scale);
                             ui.add(
                                 egui::ProgressBar::new(self.progress / 100.0)
                                     .fill(accent)
-                                    .desired_height(14.0)
+                                    .desired_height(14.0 * scale)
                                     .text(if self.busy {
-                                        format!("{:.1}%", self.progress)
+                                        RichText::new(format!("{:.1}%", self.progress))
+                                            .size(12.0 * scale)
                                     } else {
-                                        String::new()
+                                        RichText::new("").size(12.0 * scale)
                                     }),
                             );
                         });
@@ -743,7 +766,7 @@ fn open_directory(path: &Path) {
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([680.0, 430.0])
+            .with_inner_size([760.0, 580.0])
             .with_min_inner_size([480.0, 360.0])
             .with_title("影片下載器"),
         system_font_fallback: true,
