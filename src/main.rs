@@ -351,7 +351,7 @@ impl eframe::App for DownloaderApp {
         let surface = Color32::from_rgb(24, 30, 41);
         let background = Color32::from_rgb(14, 18, 26);
 
-        let mut style = (*ctx.style()).clone();
+        let mut style = (*ctx.style_of(egui::Theme::Dark)).clone();
         style.visuals.dark_mode = true;
         style.visuals.panel_fill = background;
         style.visuals.window_fill = surface;
@@ -361,7 +361,8 @@ impl eframe::App for DownloaderApp {
         style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(53, 65, 83);
         style.visuals.widgets.active.bg_fill = Color32::from_rgb(37, 151, 178);
         style.spacing.item_spacing = egui::vec2(12.0, 12.0);
-        ctx.set_style(style);
+        ctx.set_style_of(egui::Theme::Dark, style);
+        ctx.set_theme(egui::Theme::Dark);
 
         egui::CentralPanel::default()
             .frame(
