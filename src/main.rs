@@ -125,6 +125,11 @@ impl DownloaderApp {
         #[cfg(target_os = "windows")]
         args.push("--windows-filenames".into());
 
+        // GUI 程式的 stdout/stderr 會接到管線；指定 UTF-8 可避免
+        // Windows 系統地區編碼（例如 cp950）無法輸出日文等字元。
+        #[cfg(target_os = "windows")]
+        args.extend(["--encoding".into(), "utf-8".into()]);
+
         args.extend([
             "--no-playlist".into(),
             "--user-agent".into(),
@@ -175,12 +180,7 @@ impl DownloaderApp {
                     let tx = tx.clone();
 
                     thread::spawn(move || {
-                        for line in BufReader::new(stdout)
-                            .lines()
-                            .map_while(Result::ok)
-                        {
-                            process_output_line(&tx, &line, false);
-                        }
+                        read_output_lines(BufReader::new(stdout), &tx, false);
                     });
                 }
 
@@ -188,12 +188,7 @@ impl DownloaderApp {
                     let tx = self.tx.clone();
 
                     thread::spawn(move || {
-                        for line in BufReader::new(stderr)
-                            .lines()
-                            .map_while(Result::ok)
-                        {
-                            process_output_line(&tx, &line, true);
-                        }
+                        read_output_lines(BufReader::new(stderr), &tx, true);
                     });
                 }
 
@@ -281,6 +276,26 @@ impl DownloaderApp {
             };
 
             let _ = self.tx.send(Event::Finished(result));
+        }
+    }
+}
+
+fn read_output_lines<R: BufRead>(mut reader: R, tx: &Sender<Event>, log: bool) {
+    let mut bytes = Vec::new();
+
+    loop {
+        bytes.clear();
+
+        match reader.read_until(b'\n', &mut bytes) {
+            Ok(0) | Err(_) => break,
+            Ok(_) => {
+                let line = String::from_utf8_lossy(&bytes);
+                process_output_line(
+                    &tx,
+                    line.trim_end_matches(|character| character == '\r' || character == '\n'),
+                    log,
+                );
+            }
         }
     }
 }
