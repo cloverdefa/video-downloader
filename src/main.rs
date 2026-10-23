@@ -337,6 +337,13 @@ fn process_output_line(tx: &Sender<Event>, line: &str, log: bool) {
     }
 }
 
+fn progress_bar(progress: f32, accent: Color32, height: f32) -> egui::ProgressBar {
+    egui::ProgressBar::new((progress / 100.0).clamp(0.0, 1.0))
+        .fill(accent)
+        .desired_height(height)
+        .text(format!("{progress:.1}%"))
+}
+
 fn compact_ui(
     app: &mut DownloaderApp,
     ui: &mut egui::Ui,
@@ -350,47 +357,41 @@ fn compact_ui(
         .stroke(egui::Stroke::new(1.0, Color32::from_rgb(42, 51, 66)))
         .inner_margin(egui::Margin::same(card_margin))
         .show(ui, |ui| {
-            ui.label(RichText::new("網址").size(14.0 * scale).strong());
+            ui.label(
+                RichText::new(if app.busy { "下載進度" } else { "網址" })
+                    .size(14.0 * scale)
+                    .strong(),
+            );
             ui.add_space(4.0 * scale);
 
-            let entry = ui.add_enabled(
-                !app.busy,
-                egui::TextEdit::singleline(&mut app.url)
-                    .hint_text("https://…")
-                    .font(egui::FontId::proportional(12.0 * scale))
-                    .desired_width(f32::INFINITY)
-                    .margin(egui::vec2(9.0 * scale, 8.0 * scale)),
-            );
+            if app.busy {
+                ui.add(progress_bar(app.progress, accent, 18.0 * scale));
+            } else {
+                let entry = ui.add(
+                    egui::TextEdit::singleline(&mut app.url)
+                        .hint_text("https://…")
+                        .font(egui::FontId::proportional(12.0 * scale))
+                        .desired_width(f32::INFINITY)
+                        .margin(egui::vec2(9.0 * scale, 8.0 * scale)),
+                );
 
-            entry.context_menu(|ui| {
-                if ui.button("貼上網址").clicked() {
-                    match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
-                        Ok(text) => app.url = text.trim().to_owned(),
-                        Err(error) => app.error = Some(format!("無法讀取剪貼簿：{error}")),
+                entry.context_menu(|ui| {
+                    if ui.button("貼上網址").clicked() {
+                        match arboard::Clipboard::new()
+                            .and_then(|mut clipboard| clipboard.get_text())
+                        {
+                            Ok(text) => app.url = text.trim().to_owned(),
+                            Err(error) => app.error = Some(format!("無法讀取剪貼簿：{error}")),
+                        }
+
+                        ui.close();
                     }
+                });
 
-                    ui.close();
+                if entry.lost_focus() && ui.input(|input| input.key_pressed(egui::Key::Enter)) {
+                    app.start();
                 }
-            });
-
-            if entry.lost_focus()
-                && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                && !app.busy
-            {
-                app.start();
             }
-
-            ui.add_space(10.0 * scale);
-            ui.add(
-                egui::ProgressBar::new(app.progress / 100.0)
-                    .fill(accent)
-                    .desired_height(12.0 * scale)
-                    .text(if app.busy {
-                        RichText::new(format!("{:.1}%", app.progress)).size(11.0 * scale)
-                    } else {
-                        RichText::new("").size(11.0 * scale)
-                    }),
-            );
 
             ui.add_space(10.0 * scale);
             let button_label = if app.busy {
@@ -506,40 +507,53 @@ impl eframe::App for DownloaderApp {
                                 .stroke(egui::Stroke::new(1.0, Color32::from_rgb(42, 51, 66)))
                                 .inner_margin(egui::Margin::same(card_margin))
                                 .show(ui, |ui| {
-                                    ui.label(RichText::new("影片網址").size(14.0 * scale).strong());
+                                    ui.label(
+                                        RichText::new(if self.busy {
+                                            "下載進度"
+                                        } else {
+                                            "影片網址"
+                                        })
+                                        .size(14.0 * scale)
+                                        .strong(),
+                                    );
                                     ui.add_space(6.0 * scale);
 
-                                    let entry = ui.add_enabled(
-                                        !self.busy,
-                                        egui::TextEdit::singleline(&mut self.url)
-                                            .hint_text("https://www.youtube.com/watch?v=…")
-                                            .font(egui::FontId::proportional(13.0 * scale))
-                                            .desired_width(f32::INFINITY)
-                                            .margin(egui::vec2(12.0 * scale, 12.0 * scale)),
-                                    );
+                                    let entry_response = if self.busy {
+                                        ui.add(progress_bar(self.progress, accent, 40.0 * scale))
+                                    } else {
+                                        let entry = ui.add(
+                                            egui::TextEdit::singleline(&mut self.url)
+                                                .hint_text("https://www.youtube.com/watch?v=…")
+                                                .font(egui::FontId::proportional(13.0 * scale))
+                                                .desired_width(f32::INFINITY)
+                                                .margin(egui::vec2(12.0 * scale, 12.0 * scale)),
+                                        );
 
-                                    entry.context_menu(|ui| {
-                                        if ui.button("貼上網址").clicked() {
-                                            match arboard::Clipboard::new()
-                                                .and_then(|mut clipboard| clipboard.get_text())
-                                            {
-                                                Ok(text) => self.url = text.trim().to_owned(),
-                                                Err(error) => {
-                                                    self.error =
-                                                        Some(format!("無法讀取剪貼簿：{error}"));
+                                        entry.context_menu(|ui| {
+                                            if ui.button("貼上網址").clicked() {
+                                                match arboard::Clipboard::new()
+                                                    .and_then(|mut clipboard| clipboard.get_text())
+                                                {
+                                                    Ok(text) => self.url = text.trim().to_owned(),
+                                                    Err(error) => {
+                                                        self.error = Some(format!(
+                                                            "無法讀取剪貼簿：{error}"
+                                                        ));
+                                                    }
                                                 }
+
+                                                ui.close();
                                             }
+                                        });
 
-                                            ui.close();
-                                        }
-                                    });
-
-                                    ui.label(
-                                        RichText::new("提示：在網址欄按右鍵可貼上剪貼簿內容")
-                                            .small()
-                                            .size(11.0 * scale)
-                                            .color(muted),
-                                    );
+                                        ui.label(
+                                            RichText::new("提示：在網址欄按右鍵可貼上剪貼簿內容")
+                                                .small()
+                                                .size(11.0 * scale)
+                                                .color(muted),
+                                        );
+                                        entry
+                                    };
 
                                     ui.add_space(18.0 * scale);
                                     ui.label(RichText::new("下載類型").size(14.0 * scale).strong());
@@ -604,7 +618,7 @@ impl eframe::App for DownloaderApp {
                                         });
                                     });
 
-                                    if entry.lost_focus()
+                                    if entry_response.lost_focus()
                                         && ui.input(|input| input.key_pressed(egui::Key::Enter))
                                         && !self.busy
                                     {
@@ -688,18 +702,6 @@ impl eframe::App for DownloaderApp {
                                                 Color32::from_rgb(218, 226, 238)
                                             },
                                         ),
-                                    );
-                                    ui.add_space(12.0 * scale);
-                                    ui.add(
-                                        egui::ProgressBar::new(self.progress / 100.0)
-                                            .fill(accent)
-                                            .desired_height(14.0 * scale)
-                                            .text(if self.busy {
-                                                RichText::new(format!("{:.1}%", self.progress))
-                                                    .size(11.0 * scale)
-                                            } else {
-                                                RichText::new("").size(11.0 * scale)
-                                            }),
                                     );
                                 });
                         }
