@@ -850,89 +850,6 @@ jobs:
 
 
   # ==================================================================
-  # Job 3: 建置 macOS（Apple Silicon 與 Intel）
-  # ==================================================================
-
-  build-macos:
-    name: Build macOS (${{ matrix.arch }})
-    needs:
-      - version
-    if: needs.version.outputs.should_release == 'true'
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - arch: arm64
-            runner: macos-latest
-            deno_target: aarch64-apple-darwin
-            ffmpeg_arch: arm64
-          - arch: x86_64
-            runner: macos-15-intel
-            deno_target: x86_64-apple-darwin
-            ffmpeg_arch: amd64
-    runs-on: ${{ matrix.runner }}
-    steps:
-      - name: Checkout target commit
-        uses: actions/checkout@v7
-        with:
-          ref: ${{ needs.version.outputs.target_sha }}
-          fetch-depth: 0
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-
-      - name: Install tools
-        shell: bash
-        run: |
-          set -euo pipefail
-          mkdir -p bin "$RUNNER_TEMP/tools"
-          curl -fsSL https://github.com/yt-dlp/yt-dlp/releases/latest/download/yt-dlp_macos -o bin/yt-dlp
-          curl -fsSL "https://ffmpeg.martin-riedl.de/redirect/latest/macos/${{ matrix.ffmpeg_arch }}/release/ffmpeg.zip" -o "$RUNNER_TEMP/tools/ffmpeg.zip"
-          unzip -q "$RUNNER_TEMP/tools/ffmpeg.zip" -d "$RUNNER_TEMP/tools/ffmpeg"
-          find "$RUNNER_TEMP/tools/ffmpeg" -type f -name ffmpeg -print -quit | xargs -I{} cp {} bin/ffmpeg
-          curl -fsSL "https://github.com/denoland/deno/releases/latest/download/deno-${{ matrix.deno_target }}.zip" -o "$RUNNER_TEMP/tools/deno.zip"
-          unzip -q "$RUNNER_TEMP/tools/deno.zip" -d "$RUNNER_TEMP/tools/deno"
-          cp "$RUNNER_TEMP/tools/deno/deno" bin/deno
-          chmod +x bin/yt-dlp bin/ffmpeg bin/deno
-          bin/yt-dlp --version
-          bin/ffmpeg -version | head -n 1
-          bin/deno --version
-
-      - name: Build macOS app
-        shell: bash
-        env:
-          APP_VERSION: ${{ needs.version.outputs.version }}
-        run: |
-          set -euo pipefail
-          cargo build --release
-          mkdir -p "dist/影片下載器.app/Contents/MacOS"
-          cp target/release/video-downloader "dist/影片下載器.app/Contents/MacOS/video-downloader"
-          cat > "dist/影片下載器.app/Contents/Info.plist" <<PLIST
-          <?xml version="1.0" encoding="UTF-8"?>
-          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
-          <plist version="1.0">
-          <dict>
-            <key>CFBundleExecutable</key><string>video-downloader</string>
-            <key>CFBundleIdentifier</key><string>com.cloverdefa.video-downloader</string>
-            <key>CFBundleName</key><string>影片下載器</string>
-            <key>CFBundlePackageType</key><string>APPL</string>
-            <key>CFBundleShortVersionString</key><string>${APP_VERSION}</string>
-            <key>CFBundleVersion</key><string>${APP_VERSION}</string>
-          </dict>
-          </plist>
-          PLIST
-          ditto -c -k --sequesterRsrc --keepParent "dist/影片下載器.app" "dist/video_downloader_macos_${{ matrix.arch }}.zip"
-          test -s "dist/video_downloader_macos_${{ matrix.arch }}.zip"
-
-      - name: Upload macOS artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: video_downloader-macos-${{ matrix.arch }}
-          path: dist/video_downloader_macos_${{ matrix.arch }}.zip
-          retention-days: 1
-
-
-  # ==================================================================
   # Job 4: 建置 Omarchy / WSL（Linux x86_64）
   # ==================================================================
 
@@ -1017,7 +934,6 @@ jobs:
     needs:
       - version
       - build
-      - build-macos
       - build-linux
 
     if: needs.version.outputs.should_release == 'true'
@@ -1054,6 +970,4 @@ jobs:
           generate_release_notes: true
           files: |
             dist/video_downloader.exe
-            dist/video_downloader_macos_arm64.zip
-            dist/video_downloader_macos_x86_64.zip
             dist/video_downloader_omarchy_wsl_x86_64.tar.gz

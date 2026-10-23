@@ -4,7 +4,7 @@
 
 ![影片下載器介面展示：網址欄會在下載時切換為進度列](assets/gui-demo.gif)
 
-GitHub Release 提供 Windows x64、macOS（Apple Silicon／Intel）及 Linux x86_64 執行版本。Linux 版本可在 Omarchy 與具備 WSLg 的 WSL2 使用。原始碼及打包設定位於本儲存庫。
+GitHub Release 提供 Windows x64 及 Linux x86_64 執行版本。Linux 版本可在 Omarchy 與具備 WSLg 的 WSL2 使用。原始碼及打包設定位於本儲存庫。
 
 ## 功能
 
@@ -21,18 +21,16 @@ GitHub Release 提供 Windows x64、macOS（Apple Silicon／Intel）及 Linux x8
 前往 **[GitHub Releases](https://github.com/cloverdefa/video-downloader/releases/latest)**，依照作業系統下載：
 
 - **Windows x64**：下載 `video_downloader.exe` 後直接執行。
-- **macOS Apple Silicon**：下載 `video_downloader_macos_arm64.zip`，解壓縮後開啟「影片下載器.app」。
-- **macOS Intel**：下載 `video_downloader_macos_x86_64.zip`，解壓縮後開啟「影片下載器.app」。
 - **Omarchy／WSL2 x86_64**：下載 `video_downloader_omarchy_wsl_x86_64.tar.gz`，解壓縮後執行 `./video_downloader`。WSL 需啟用 WSLg 才能顯示 GUI。
 
-Release 套件已內嵌 yt-dlp、FFmpeg 和 Deno，不必另外安裝這些工具。macOS 套件未經 Apple Developer ID 簽署；首次開啟時若出現安全性提示，請在 Finder 對 App 按右鍵並選擇「打開」。
+Release 套件已內嵌 yt-dlp、FFmpeg 和 Deno，不必另外安裝這些工具。
 
 1. 依上方說明下載並開啟對應作業系統的版本。
 2. 在「影片網址」欄貼上網址，按「開始下載」或 Enter。
 3. 等候解析與下載；需要時按「取消」停止。
 4. 下載完成後，程式會開啟存放檔案的資料夾。
 
-檔案會存到執行檔所在的資料夾；macOS 版本會存到使用者的 `Downloads` 資料夾。檔名格式為影片標題（最多 80 個字元）及影片 ID。請確認輸出資料夾可寫入。
+檔案會存到執行檔所在的資料夾。檔名格式為影片標題（最多 80 個字元）及影片 ID。請確認輸出資料夾可寫入。
 
 ## 執行環境與工具
 
@@ -73,11 +71,11 @@ GitHub Actions 的 Release workflow 支援兩種觸發方式：
 - `test` 分支的 Pull Request 合併至 `main` 後自動執行。
 - 在 GitHub Actions 手動執行 Release workflow，選擇 `patch`、`minor` 或 `major` 版本類型。
 
-Workflow 會依既有版本計算下一個 `vMAJOR.MINOR.PATCH` 版本，並在 Windows、macOS 與 Linux runner 建置各平台版本。每個版本都會嵌入 yt-dlp、FFmpeg 與 Deno，最後一併上傳至 GitHub Release。macOS 另提供 Apple Silicon 與 Intel 兩種 `.app` 壓縮檔；Linux 提供 Omarchy／WSL2 x86_64 的 tar.gz 套件。
+Workflow 會依既有版本計算下一個 `vMAJOR.MINOR.PATCH` 版本，並在 Windows 與 Linux runner 建置各平台版本。每個版本都會嵌入 yt-dlp、FFmpeg 與 Deno，最後一併上傳至 GitHub Release。Linux 提供 Omarchy／WSL2 x86_64 的 tar.gz 套件。
 
 ## 支援範圍與限制
 
-Windows Release 目標為 x64；macOS 提供 Apple Silicon 和 Intel 版本；Linux Release 為 x86_64，面向 Omarchy 及 WSL2。Linux 版需要可用的 X11／Wayland 圖形環境與系統圖形函式庫；WSL 使用者需啟用 WSLg。Ubuntu／Debian 上若缺少圖形函式庫，可安裝 `libgl1 libwayland-client0 libx11-6 libxcursor1 libxi6 libxkbcommon0 libxkbcommon-x11-0 libxrandr2 libxcb-randr0 libxcb-shape0 libxcb-xfixes0`。
+Windows Release 目標為 x64；Linux Release 為 x86_64，面向 Omarchy 及 WSL2。Linux 版需要可用的 X11／Wayland 圖形環境與系統圖形函式庫；WSL 使用者需啟用 WSLg。Ubuntu／Debian 上若缺少圖形函式庫，可安裝 `libgl1 libwayland-client0 libx11-6 libxcursor1 libxi6 libxkbcommon0 libxkbcommon-x11-0 libxrandr2 libxcb-randr0 libxcb-shape0 libxcb-xfixes0`。
 
 有些網站或影片可能要求登入、Cookie 或其他驗證，也可能限制請求頻率或變更解析方式，因此無法保證所有網址均可下載。此程式不提供 Cookie 管理介面。請確認自己有權下載內容，並遵守來源網站條款及所在地法律。
 
