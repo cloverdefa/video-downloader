@@ -2,7 +2,7 @@
 
 一個以 Rust、egui 和 [yt-dlp](https://github.com/yt-dlp/yt-dlp) 製作的桌面影片下載工具。貼上影片網址即可解析並下載，程式會顯示影片名稱與下載進度，也可以取消下載。
 
-![Rust GUI 操作流程示意](assets/gui-demo.gif)
+![影片下載器介面展示：網址欄會在下載時切換為進度列](assets/gui-demo.gif)
 
 目前 GitHub Release 提供 Windows x64 執行檔。原始碼及打包設定位於本儲存庫。
 
