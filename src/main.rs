@@ -346,125 +346,230 @@ impl eframe::App for DownloaderApp {
     fn ui(&mut self, ui: &mut egui::Ui, _frame: &mut eframe::Frame) {
         let ctx = ui.ctx().clone();
 
+        let accent = Color32::from_rgb(45, 183, 211);
+        let muted = Color32::from_rgb(151, 164, 183);
+        let surface = Color32::from_rgb(24, 30, 41);
+        let background = Color32::from_rgb(14, 18, 26);
+
+        let mut style = (*ctx.style()).clone();
+        style.visuals.dark_mode = true;
+        style.visuals.panel_fill = background;
+        style.visuals.window_fill = surface;
+        style.visuals.override_text_color = Some(Color32::from_rgb(232, 238, 246));
+        style.visuals.selection.bg_fill = accent;
+        style.visuals.widgets.inactive.bg_fill = Color32::from_rgb(39, 47, 61);
+        style.visuals.widgets.hovered.bg_fill = Color32::from_rgb(53, 65, 83);
+        style.visuals.widgets.active.bg_fill = Color32::from_rgb(37, 151, 178);
+        style.spacing.item_spacing = egui::vec2(12.0, 12.0);
+        ctx.set_style(style);
+
         egui::CentralPanel::default()
             .frame(
                 egui::Frame::NONE
-                    .fill(Color32::from_rgb(17, 19, 24))
-                    .inner_margin(egui::Margin::same(26)),
+                    .fill(background)
+                    .inner_margin(egui::Margin::same(30)),
             )
             .show(ui, |ui| {
-                ui.set_max_width(620.0);
+                ui.vertical_centered(|ui| {
+                    ui.set_max_width(700.0);
 
-                ui.horizontal(|ui| {
-                    ui.heading(RichText::new("影片下載器").size(25.0).strong());
+                    ui.horizontal(|ui| {
+                        ui.vertical(|ui| {
+                            ui.heading(RichText::new("影片下載器").size(27.0).strong());
+                            ui.label(RichText::new("貼上連結，快速下載影片或音訊").color(muted));
+                        });
 
-                    if ui
-                        .small_button(format!("v{}　版本資訊", embedded::APP_VERSION))
-                        .clicked()
-                    {
-                        self.versions_open = true;
-                    }
-                });
-
-                ui.add_space(20.0);
-
-                ui.label(RichText::new("影片網址").color(Color32::from_rgb(174, 184, 201)));
-
-                let entry = ui.add_enabled(
-                    !self.busy,
-                    egui::TextEdit::singleline(&mut self.url)
-                        .hint_text("https://…")
-                        .desired_width(f32::INFINITY),
-                );
-
-                entry.context_menu(|ui| {
-                    if ui.button("貼上網址").clicked() {
-                        match arboard::Clipboard::new()
-                            .and_then(|mut clipboard| clipboard.get_text())
-                        {
-                            Ok(text) => self.url = text.trim().to_owned(),
-                            Err(error) => {
-                                self.error = Some(format!("無法讀取剪貼簿：{error}"));
+                        ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
+                            if ui
+                                .small_button(format!("v{}　版本資訊", embedded::APP_VERSION))
+                                .clicked()
+                            {
+                                self.versions_open = true;
                             }
-                        }
-
-                        ui.close();
-                    }
-                });
-
-                ui.add_space(8.0);
-
-                ui.horizontal(|ui| {
-                    ui.label(RichText::new("下載類型").color(Color32::from_rgb(174, 184, 201)));
-                    ui.add_enabled_ui(!self.busy, |ui| {
-                        ui.radio_value(&mut self.mode, DownloadMode::Video, "影片");
-                        ui.radio_value(&mut self.mode, DownloadMode::Audio, "音樂（MP3）");
+                        });
                     });
+
+                    ui.add_space(24.0);
+
+                    egui::Frame::NONE
+                        .fill(surface)
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(42, 51, 66)))
+                        .inner_margin(egui::Margin::same(20))
+                        .show(ui, |ui| {
+                            ui.label(RichText::new("影片網址").strong());
+                            ui.add_space(6.0);
+
+                            let entry = ui.add_enabled(
+                                !self.busy,
+                                egui::TextEdit::singleline(&mut self.url)
+                                    .hint_text("https://www.youtube.com/watch?v=…")
+                                    .desired_width(f32::INFINITY)
+                                    .margin(egui::vec2(12.0, 12.0)),
+                            );
+
+                            entry.context_menu(|ui| {
+                                if ui.button("貼上網址").clicked() {
+                                    match arboard::Clipboard::new()
+                                        .and_then(|mut clipboard| clipboard.get_text())
+                                    {
+                                        Ok(text) => self.url = text.trim().to_owned(),
+                                        Err(error) => {
+                                            self.error = Some(format!("無法讀取剪貼簿：{error}"));
+                                        }
+                                    }
+
+                                    ui.close();
+                                }
+                            });
+
+                            ui.label(
+                                RichText::new("提示：在網址欄按右鍵可貼上剪貼簿內容")
+                                    .small()
+                                    .color(muted),
+                            );
+
+                            ui.add_space(18.0);
+                            ui.label(RichText::new("下載類型").strong());
+                            ui.add_space(4.0);
+
+                            ui.horizontal(|ui| {
+                                ui.add_enabled_ui(!self.busy, |ui| {
+                                    let video_selected = self.mode == DownloadMode::Video;
+                                    let audio_selected = self.mode == DownloadMode::Audio;
+
+                                    if ui
+                                        .add(
+                                            egui::Button::new("影片　MP4")
+                                                .min_size(egui::vec2(132.0, 38.0))
+                                                .fill(if video_selected {
+                                                    Color32::from_rgb(31, 112, 137)
+                                                } else {
+                                                    Color32::from_rgb(34, 41, 54)
+                                                })
+                                                .stroke(egui::Stroke::new(
+                                                    1.0,
+                                                    if video_selected {
+                                                        accent
+                                                    } else {
+                                                        Color32::from_rgb(54, 64, 80)
+                                                    },
+                                                )),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.mode = DownloadMode::Video;
+                                    }
+
+                                    if ui
+                                        .add(
+                                            egui::Button::new("音樂　MP3")
+                                                .min_size(egui::vec2(132.0, 38.0))
+                                                .fill(if audio_selected {
+                                                    Color32::from_rgb(31, 112, 137)
+                                                } else {
+                                                    Color32::from_rgb(34, 41, 54)
+                                                })
+                                                .stroke(egui::Stroke::new(
+                                                    1.0,
+                                                    if audio_selected {
+                                                        accent
+                                                    } else {
+                                                        Color32::from_rgb(54, 64, 80)
+                                                    },
+                                                )),
+                                        )
+                                        .clicked()
+                                    {
+                                        self.mode = DownloadMode::Audio;
+                                    }
+                                });
+                            });
+
+                            if entry.lost_focus()
+                                && ui.input(|input| input.key_pressed(egui::Key::Enter))
+                                && !self.busy
+                            {
+                                self.start();
+                            }
+
+                            ui.add_space(20.0);
+
+                            ui.horizontal(|ui| {
+                                if ui
+                                    .add_enabled(
+                                        !self.busy,
+                                        egui::Button::new(RichText::new("開始下載").strong())
+                                            .fill(accent)
+                                            .min_size(egui::vec2(170.0, 46.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    self.start();
+                                }
+
+                                if ui
+                                    .add_enabled(
+                                        self.busy,
+                                        egui::Button::new("取消下載")
+                                            .min_size(egui::vec2(110.0, 46.0)),
+                                    )
+                                    .clicked()
+                                {
+                                    self.cancel();
+                                }
+                            });
+                        });
+
+                    ui.add_space(16.0);
+
+                    egui::Frame::NONE
+                        .fill(Color32::from_rgb(19, 25, 35))
+                        .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 45, 59)))
+                        .inner_margin(egui::Margin::same(20))
+                        .show(ui, |ui| {
+                            ui.horizontal(|ui| {
+                                ui.label(
+                                    RichText::new(match self.mode {
+                                        DownloadMode::Video => "下載影片",
+                                        DownloadMode::Audio => "下載音樂",
+                                    })
+                                    .strong(),
+                                );
+                                ui.with_layout(
+                                    egui::Layout::right_to_left(egui::Align::Center),
+                                    |ui| {
+                                        ui.label(RichText::new(&self.status).color(accent));
+                                    },
+                                );
+                            });
+
+                            ui.add_space(8.0);
+                            ui.label(
+                                RichText::new(if self.title.is_empty() {
+                                    "等待影片資訊…"
+                                } else {
+                                    &self.title
+                                })
+                                .color(if self.title.is_empty() {
+                                    muted
+                                } else {
+                                    Color32::from_rgb(218, 226, 238)
+                                }),
+                            );
+                            ui.add_space(12.0);
+                            ui.add(
+                                egui::ProgressBar::new(self.progress / 100.0)
+                                    .fill(accent)
+                                    .desired_height(14.0)
+                                    .text(if self.busy {
+                                        format!("{:.1}%", self.progress)
+                                    } else {
+                                        String::new()
+                                    }),
+                            );
+                        });
                 });
-
-                if entry.lost_focus()
-                    && ui.input(|input| input.key_pressed(egui::Key::Enter))
-                    && !self.busy
-                {
-                    self.start();
-                }
-
-                ui.add_space(12.0);
-
-                ui.horizontal(|ui| {
-                    if ui
-                        .add_enabled(
-                            !self.busy,
-                            egui::Button::new("開始下載").min_size(egui::vec2(115.0, 36.0)),
-                        )
-                        .clicked()
-                    {
-                        self.start();
-                    }
-
-                    if ui
-                        .add_enabled(
-                            self.busy,
-                            egui::Button::new("取消").min_size(egui::vec2(85.0, 36.0)),
-                        )
-                        .clicked()
-                    {
-                        self.cancel();
-                    }
-                });
-
-                ui.add_space(22.0);
-
-                ui.label(
-                    RichText::new(match self.mode {
-                        DownloadMode::Video => "影片",
-                        DownloadMode::Audio => "音樂",
-                    })
-                    .color(Color32::from_rgb(174, 184, 201)),
-                );
-
-                ui.label(if self.title.is_empty() {
-                    "等待影片資訊…"
-                } else {
-                    &self.title
-                });
-
-                ui.add_space(12.0);
-
-                ui.add(
-                    egui::ProgressBar::new(self.progress / 100.0).text(if self.busy {
-                        format!("{:.1}%", self.progress)
-                    } else {
-                        String::new()
-                    }),
-                );
-
-                ui.add_space(8.0);
-
-                ui.label(RichText::new(&self.status).color(Color32::from_rgb(91, 166, 255)));
             });
-
-        ctx.set_theme(egui::Theme::Dark);
 
         if self.versions_open {
             egui::Window::new("版本資訊")
