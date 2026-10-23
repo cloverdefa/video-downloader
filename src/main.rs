@@ -1,4 +1,3 @@
-
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 use eframe::egui::{self, Color32, RichText};
@@ -30,8 +29,15 @@ enum Event {
     Finished(Result<(), String>),
 }
 
+#[derive(Clone, Copy, PartialEq, Eq)]
+enum DownloadMode {
+    Video,
+    Audio,
+}
+
 struct DownloaderApp {
     url: String,
+    mode: DownloadMode,
     title: String,
     status: String,
     progress: f32,
@@ -51,6 +57,7 @@ impl Default for DownloaderApp {
 
         Self {
             url: String::new(),
+            mode: DownloadMode::Video,
             title: String::new(),
             status: "貼上影片網址即可開始下載".into(),
             progress: 0.0,
@@ -102,10 +109,8 @@ impl DownloaderApp {
         let deno = tool_path("deno");
 
         if deno.is_none() {
-            self.error = Some(
-                "找不到 Deno；YouTube 的可用格式或畫質可能受限。下載仍會繼續。"
-                    .into(),
-            );
+            self.error =
+                Some("找不到 Deno；YouTube 的可用格式或畫質可能受限。下載仍會繼續。".into());
         }
 
         let output = app_dir();
@@ -117,9 +122,20 @@ impl DownloaderApp {
                 .join("%(title).80B [%(id)s].%(ext)s")
                 .to_string_lossy()
                 .into_owned(),
-            "-f".into(),
-            "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b".into(),
         ];
+
+        match self.mode {
+            DownloadMode::Video => {
+                args.extend(["-f".into(), "bv*[ext=mp4]+ba[ext=m4a]/bv*+ba/b".into()])
+            }
+            DownloadMode::Audio => args.extend([
+                "-x".into(),
+                "--audio-format".into(),
+                "mp3".into(),
+                "--audio-quality".into(),
+                "0".into(),
+            ]),
+        }
 
         // Windows 專用檔名處理參數。
         #[cfg(target_os = "windows")]
@@ -144,22 +160,15 @@ impl DownloaderApp {
         ]);
 
         if let Some(deno) = deno {
-            args.extend([
-                "--js-runtimes".into(),
-                format!("deno:{}", deno.display()),
-            ]);
+            args.extend(["--js-runtimes".into(), format!("deno:{}", deno.display())]);
         }
 
-        args.extend([
-            "--newline".into(),
-            "--".into(),
-            url,
-        ]);
+        args.extend(["--newline".into(), "--".into(), url]);
 
         self.title.clear();
         self.progress = 0.0;
         self.logs.clear();
-        self.status = "正在解析影片資訊…".into();
+        self.status = "正在解析媒體資訊…".into();
         self.busy = true;
 
         let tx = self.tx.clone();
@@ -262,9 +271,10 @@ impl DownloaderApp {
         }
 
         // 只在子程序結束時送出一次 Finished 事件。
-        let finished = self.child.as_mut().and_then(|child| {
-            child.try_wait().ok().flatten()
-        });
+        let finished = self
+            .child
+            .as_mut()
+            .and_then(|child| child.try_wait().ok().flatten());
 
         if let Some(status) = finished {
             self.child = None;
@@ -346,17 +356,10 @@ impl eframe::App for DownloaderApp {
                 ui.set_max_width(620.0);
 
                 ui.horizontal(|ui| {
-                    ui.heading(
-                        RichText::new("影片下載器")
-                            .size(25.0)
-                            .strong(),
-                    );
+                    ui.heading(RichText::new("影片下載器").size(25.0).strong());
 
                     if ui
-                        .small_button(format!(
-                            "v{}　版本資訊",
-                            embedded::APP_VERSION
-                        ))
+                        .small_button(format!("v{}　版本資訊", embedded::APP_VERSION))
                         .clicked()
                     {
                         self.versions_open = true;
@@ -365,10 +368,7 @@ impl eframe::App for DownloaderApp {
 
                 ui.add_space(20.0);
 
-                ui.label(
-                    RichText::new("影片網址")
-                        .color(Color32::from_rgb(174, 184, 201)),
-                );
+                ui.label(RichText::new("影片網址").color(Color32::from_rgb(174, 184, 201)));
 
                 let entry = ui.add_enabled(
                     !self.busy,
@@ -376,6 +376,31 @@ impl eframe::App for DownloaderApp {
                         .hint_text("https://…")
                         .desired_width(f32::INFINITY),
                 );
+
+                entry.context_menu(|ui| {
+                    if ui.button("貼上網址").clicked() {
+                        match arboard::Clipboard::new()
+                            .and_then(|mut clipboard| clipboard.get_text())
+                        {
+                            Ok(text) => self.url = text.trim().to_owned(),
+                            Err(error) => {
+                                self.error = Some(format!("無法讀取剪貼簿：{error}"));
+                            }
+                        }
+
+                        ui.close();
+                    }
+                });
+
+                ui.add_space(8.0);
+
+                ui.horizontal(|ui| {
+                    ui.label(RichText::new("下載類型").color(Color32::from_rgb(174, 184, 201)));
+                    ui.add_enabled_ui(!self.busy, |ui| {
+                        ui.radio_value(&mut self.mode, DownloadMode::Video, "影片");
+                        ui.radio_value(&mut self.mode, DownloadMode::Audio, "音樂（MP3）");
+                    });
+                });
 
                 if entry.lost_focus()
                     && ui.input(|input| input.key_pressed(egui::Key::Enter))
@@ -390,8 +415,7 @@ impl eframe::App for DownloaderApp {
                     if ui
                         .add_enabled(
                             !self.busy,
-                            egui::Button::new("開始下載")
-                                .min_size(egui::vec2(115.0, 36.0)),
+                            egui::Button::new("開始下載").min_size(egui::vec2(115.0, 36.0)),
                         )
                         .clicked()
                     {
@@ -401,8 +425,7 @@ impl eframe::App for DownloaderApp {
                     if ui
                         .add_enabled(
                             self.busy,
-                            egui::Button::new("取消")
-                                .min_size(egui::vec2(85.0, 36.0)),
+                            egui::Button::new("取消").min_size(egui::vec2(85.0, 36.0)),
                         )
                         .clicked()
                     {
@@ -413,8 +436,11 @@ impl eframe::App for DownloaderApp {
                 ui.add_space(22.0);
 
                 ui.label(
-                    RichText::new("影片")
-                        .color(Color32::from_rgb(174, 184, 201)),
+                    RichText::new(match self.mode {
+                        DownloadMode::Video => "影片",
+                        DownloadMode::Audio => "音樂",
+                    })
+                    .color(Color32::from_rgb(174, 184, 201)),
                 );
 
                 ui.label(if self.title.is_empty() {
@@ -426,20 +452,16 @@ impl eframe::App for DownloaderApp {
                 ui.add_space(12.0);
 
                 ui.add(
-                    egui::ProgressBar::new(self.progress / 100.0)
-                        .text(if self.busy {
-                            format!("{:.1}%", self.progress)
-                        } else {
-                            String::new()
-                        }),
+                    egui::ProgressBar::new(self.progress / 100.0).text(if self.busy {
+                        format!("{:.1}%", self.progress)
+                    } else {
+                        String::new()
+                    }),
                 );
 
                 ui.add_space(8.0);
 
-                ui.label(
-                    RichText::new(&self.status)
-                        .color(Color32::from_rgb(91, 166, 255)),
-                );
+                ui.label(RichText::new(&self.status).color(Color32::from_rgb(91, 166, 255)));
             });
 
         ctx.set_theme(egui::Theme::Dark);
@@ -512,11 +534,7 @@ fn tool_path(name: &str) -> Option<PathBuf> {
     let mut candidates = vec![app_dir().join(&filename)];
 
     if let Some(one_drive) = env::var_os("ONEDRIVE") {
-        candidates.push(
-            PathBuf::from(one_drive)
-                .join("bin")
-                .join(&filename),
-        );
+        candidates.push(PathBuf::from(one_drive).join("bin").join(&filename));
     }
 
     if let Some(path) = embedded_tool(name) {
@@ -544,10 +562,7 @@ fn embedded_tool(name: &str) -> Option<PathBuf> {
         _ => return None,
     };
 
-    let directory = env::temp_dir().join(format!(
-        "video-downloader-{}",
-        embedded::APP_VERSION
-    ));
+    let directory = env::temp_dir().join(format!("video-downloader-{}", embedded::APP_VERSION));
 
     fs::create_dir_all(&directory).ok()?;
 
@@ -638,4 +653,3 @@ fn main() -> eframe::Result {
         }),
     )
 }
-
