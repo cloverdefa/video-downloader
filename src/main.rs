@@ -113,7 +113,7 @@ impl DownloaderApp {
                 Some("找不到 Deno；YouTube 的可用格式或畫質可能受限。下載仍會繼續。".into());
         }
 
-        let output = app_dir();
+        let output = download_dir();
         let ffmpeg_dir = ffmpeg.parent().unwrap_or(Path::new("."));
 
         let mut args = vec![
@@ -251,7 +251,7 @@ impl DownloaderApp {
                         Ok(()) => {
                             self.progress = 100.0;
                             self.status = "下載完成".into();
-                            open_directory(&app_dir());
+                            open_directory(&download_dir());
                         }
 
                         Err(error) => {
@@ -357,16 +357,12 @@ fn compact_ui(
         .stroke(egui::Stroke::new(1.0, Color32::from_rgb(42, 51, 66)))
         .inner_margin(egui::Margin::same(card_margin))
         .show(ui, |ui| {
-            ui.label(
-                RichText::new(if app.busy { "下載進度" } else { "網址" })
-                    .size(14.0 * scale)
-                    .strong(),
-            );
-            ui.add_space(4.0 * scale);
-
             if app.busy {
                 ui.add(progress_bar(app.progress, accent, 18.0 * scale));
             } else {
+                ui.label(RichText::new("網址").size(14.0 * scale).strong());
+                ui.add_space(4.0 * scale);
+
                 let entry = ui.add(
                     egui::TextEdit::singleline(&mut app.url)
                         .hint_text("https://…")
@@ -432,9 +428,13 @@ impl eframe::App for DownloaderApp {
         let ctx = ui.ctx().clone();
         let viewport_size = ui.available_size();
         let compact = viewport_size.x < 600.0 || viewport_size.y < 450.0;
-        let scale = (viewport_size.x / 720.0)
-            .min(viewport_size.y / 540.0)
-            .clamp(0.62, 1.0);
+        let scale = if compact {
+            (viewport_size.x / 580.0).clamp(0.72, 1.0)
+        } else {
+            (viewport_size.x / 720.0)
+                .min(viewport_size.y / 540.0)
+                .clamp(0.62, 1.0)
+        };
         let outer_margin = ((if compact { 16.0 } else { 30.0 }) * scale).round() as i8;
         let card_margin = ((if compact { 14.0 } else { 20.0 }) * scale).round() as i8;
 
@@ -772,6 +772,19 @@ fn app_dir() -> PathBuf {
         .unwrap_or_default()
 }
 
+fn download_dir() -> PathBuf {
+    #[cfg(target_os = "macos")]
+    if let Some(downloads_dir) = env::var_os("HOME")
+        .map(PathBuf::from)
+        .map(|home| home.join("Downloads"))
+        .filter(|path| path.is_dir())
+    {
+        return downloads_dir;
+    }
+
+    app_dir()
+}
+
 fn tool_path(name: &str) -> Option<PathBuf> {
     let filename = tool_filename(name);
     let mut candidates = vec![app_dir().join(&filename)];
@@ -881,7 +894,7 @@ fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_inner_size([760.0, 580.0])
-            .with_min_inner_size([480.0, 360.0])
+            .with_min_inner_size([320.0, 160.0])
             .with_title("影片下載器"),
         system_font_fallback: true,
         ..Default::default()
