@@ -69,10 +69,9 @@ impl Default for DownloaderApp {
             logs: Vec::new(),
             versions_open: false,
             versions: format!(
-                "影片下載器 v{}\nyt-dlp：{}\nFFmpeg：{}\nDeno：{}",
-                embedded::APP_VERSION,
-                tool_version("yt-dlp"),
+                "FFmpeg：{}\nyt-dlp：{}\nDeno：{}",
                 tool_version("ffmpeg"),
+                tool_version("yt-dlp"),
                 tool_version("deno"),
             ),
         }
@@ -488,10 +487,7 @@ impl eframe::App for DownloaderApp {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if ui
-                                            .small_button(format!(
-                                                "v{}　版本資訊",
-                                                embedded::APP_VERSION
-                                            ))
+                                            .small_button("版本資訊")
                                             .clicked()
                                         {
                                             self.versions_open = true;
