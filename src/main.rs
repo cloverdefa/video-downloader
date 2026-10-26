@@ -893,6 +893,7 @@ fn main() -> eframe::Result {
             .with_inner_size([760.0, 580.0])
             .with_min_inner_size([320.0, 160.0])
             .with_title("影片下載器")
+            .with_app_id("video-downloader")
             .with_icon(icon),
         system_font_fallback: true,
         ..Default::default()
@@ -913,7 +914,7 @@ fn app_icon() -> std::sync::Arc<egui::IconData> {
         "../assets/app-icon.png"
     )));
     let mut reader = decoder.read_info().expect("read app icon PNG");
-    let mut rgba = vec![0; 256 * 256 * 4];
+    let mut rgba = vec![0; reader.output_buffer_size().expect("icon too large")];
     let info = reader.next_frame(&mut rgba).expect("decode app icon PNG");
     rgba.truncate(info.buffer_size());
     std::sync::Arc::new(egui::IconData {
