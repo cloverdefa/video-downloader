@@ -910,9 +910,14 @@ jobs:
         run: |
           set -euo pipefail
           cargo build --release
-          mkdir -p dist/package
-          cp target/release/video-downloader dist/package/video_downloader
-          chmod +x dist/package/video_downloader
+          PKG=dist/package/video_downloader
+          mkdir -p "$PKG"
+          cp target/release/video-downloader "$PKG/video_downloader"
+          cp assets/app-icon.png assets/app-icon.svg "$PKG/"
+          cp packaging/linux/video-downloader.desktop \
+             packaging/linux/install.sh \
+             packaging/linux/uninstall.sh "$PKG/"
+          chmod +x "$PKG/video_downloader" "$PKG/install.sh" "$PKG/uninstall.sh"
           tar -C dist/package -czf dist/video_downloader_omarchy_wsl_x86_64.tar.gz video_downloader
           test -s dist/video_downloader_omarchy_wsl_x86_64.tar.gz
 
