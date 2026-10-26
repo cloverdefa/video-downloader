@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=影片下載器
+GenericName=Video Downloader
+Comment=yt-dlp GUI
+Exec=@EXEC@
+Icon=video-downloader
+Terminal=false
+Categories=AudioVideo;Network;
+StartupWMClass=video-downloader
