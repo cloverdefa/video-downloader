@@ -65,7 +65,7 @@ impl Default for DownloaderApp {
             url: String::new(),
             mode: DownloadMode::Video,
             title: String::new(),
-            status: "貼上影片網址即可開始下載".into(),
+            status: String::new(),
             progress: 0.0,
             busy: false,
             child: None,
@@ -733,11 +733,15 @@ impl eframe::App for DownloaderApp {
                                                                         .size(13.0 * scale)
                                                                         .color(accent),
                                                                 );
-                                                                ui.add(progress_bar(
-                                                                    self.progress,
-                                                                    accent,
-                                                                    12.0 * scale,
-                                                                ));
+                                                                if !self.title.is_empty() {
+                                                                    ui.label(
+                                                                        RichText::new(&self.title)
+                                                                            .size(13.0 * scale)
+                                                                            .color(Color32::from_rgb(
+                                                                                218, 226, 238,
+                                                                            )),
+                                                                    );
+                                                                }
                                                             } else {
                                                                 ui.add_space(
                                                                     (ui.available_height() / 4.0)
