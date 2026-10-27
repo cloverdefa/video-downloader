@@ -27,6 +27,8 @@ enum Event {
     Progress(f32),
     Log(String),
     Finished(Result<(), String>),
+    UpdateChecked(Result<Option<(String, String)>, String>),
+    UpdateReady(Result<(), String>),
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -49,6 +51,10 @@ struct DownloaderApp {
     logs: Vec<String>,
     versions_open: bool,
     versions: String,
+    update_status: String,
+    update_asset: Option<(String, String)>,
+    updating: bool,
+    should_exit: bool,
 }
 
 impl Default for DownloaderApp {
@@ -69,11 +75,16 @@ impl Default for DownloaderApp {
             logs: Vec::new(),
             versions_open: false,
             versions: format!(
-                "FFmpeg：{}\nyt-dlp：{}\nDeno：{}",
+                "應用程式：v{}\nFFmpeg：{}\nyt-dlp：{}\nDeno：{}",
+                embedded::APP_VERSION,
                 tool_version("ffmpeg"),
                 tool_version("yt-dlp"),
                 tool_version("deno"),
             ),
+            update_status: "尚未檢查更新".into(),
+            update_asset: None,
+            updating: false,
+            should_exit: false,
         }
     }
 }
@@ -266,6 +277,30 @@ impl DownloaderApp {
                         }
                     }
                 }
+                Event::UpdateChecked(result) => match result {
+                    Ok(Some((version, url))) => {
+                        self.update_status = format!("發現新版本 v{version}");
+                        self.update_asset = Some((version, url));
+                    }
+                    Ok(None) => {
+                        self.update_status = "目前已是最新版本".into();
+                        self.update_asset = None;
+                    }
+                    Err(error) => {
+                        self.update_status = format!("檢查失敗：{error}");
+                        self.update_asset = None;
+                    }
+                },
+                Event::UpdateReady(result) => {
+                    self.updating = false;
+                    match result {
+                        Ok(()) => {
+                            self.update_status = "更新已完成，正在重新啟動…".into();
+                            self.should_exit = true;
+                        }
+                        Err(error) => self.update_status = format!("更新失敗：{error}"),
+                    }
+                }
             }
         }
 
@@ -420,6 +455,9 @@ fn compact_ui(
 impl eframe::App for DownloaderApp {
     fn logic(&mut self, ctx: &egui::Context, _frame: &mut eframe::Frame) {
         self.poll();
+        if self.should_exit {
+            ctx.send_viewport_cmd(egui::ViewportCommand::Close);
+        }
         ctx.request_repaint_after(Duration::from_millis(120));
     }
 
@@ -432,7 +470,7 @@ impl eframe::App for DownloaderApp {
         } else {
             (viewport_size.x / 720.0)
                 .min(viewport_size.y / 540.0)
-                .clamp(0.62, 1.0)
+                .clamp(0.62, 1.35)
         };
         let outer_margin = ((if compact { 16.0 } else { 30.0 }) * scale).round() as i8;
         let card_margin = ((if compact { 14.0 } else { 20.0 }) * scale).round() as i8;
@@ -487,10 +525,17 @@ impl eframe::App for DownloaderApp {
                                     egui::Layout::right_to_left(egui::Align::Center),
                                     |ui| {
                                         if ui
-                                            .small_button("版本資訊")
+                                            .small_button(format!(
+                                                "版本 v{}",
+                                                embedded::APP_VERSION
+                                            ))
                                             .clicked()
                                         {
                                             self.versions_open = true;
+                                            if self.update_status == "尚未檢查更新" {
+                                                check_for_update(self.tx.clone());
+                                                self.update_status = "正在檢查更新…".into();
+                                            }
                                         }
                                     },
                                 );
@@ -552,66 +597,185 @@ impl eframe::App for DownloaderApp {
                                     };
 
                                     ui.add_space(18.0 * scale);
-                                    ui.label(RichText::new("下載類型").size(14.0 * scale).strong());
-                                    ui.add_space(4.0 * scale);
-
                                     ui.horizontal(|ui| {
-                                        ui.add_enabled_ui(!self.busy, |ui| {
-                                            let video_selected = self.mode == DownloadMode::Video;
-                                            let audio_selected = self.mode == DownloadMode::Audio;
-
-                                            if ui
-                                                .add(
-                                                    egui::Button::new("影片　MP4")
+                                        ui.vertical(|ui| {
+                                            ui.label(
+                                                RichText::new("下載類型")
+                                                    .size(14.0 * scale)
+                                                    .strong(),
+                                            );
+                                            ui.add_space(4.0 * scale);
+                                            ui.horizontal(|ui| {
+                                                ui.add_enabled_ui(!self.busy, |ui| {
+                                                    let video_selected =
+                                                        self.mode == DownloadMode::Video;
+                                                    let audio_selected =
+                                                        self.mode == DownloadMode::Audio;
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::new("影片　MP4")
+                                                                .min_size(egui::vec2(
+                                                                    132.0 * scale,
+                                                                    38.0 * scale,
+                                                                ))
+                                                                .fill(if video_selected {
+                                                                    Color32::from_rgb(31, 112, 137)
+                                                                } else {
+                                                                    Color32::from_rgb(34, 41, 54)
+                                                                })
+                                                                .stroke(egui::Stroke::new(
+                                                                    1.0,
+                                                                    if video_selected {
+                                                                        accent
+                                                                    } else {
+                                                                        Color32::from_rgb(
+                                                                            54, 64, 80,
+                                                                        )
+                                                                    },
+                                                                )),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.mode = DownloadMode::Video;
+                                                    }
+                                                    if ui
+                                                        .add(
+                                                            egui::Button::new("音樂　MP3")
+                                                                .min_size(egui::vec2(
+                                                                    132.0 * scale,
+                                                                    38.0 * scale,
+                                                                ))
+                                                                .fill(if audio_selected {
+                                                                    Color32::from_rgb(31, 112, 137)
+                                                                } else {
+                                                                    Color32::from_rgb(34, 41, 54)
+                                                                })
+                                                                .stroke(egui::Stroke::new(
+                                                                    1.0,
+                                                                    if audio_selected {
+                                                                        accent
+                                                                    } else {
+                                                                        Color32::from_rgb(
+                                                                            54, 64, 80,
+                                                                        )
+                                                                    },
+                                                                )),
+                                                        )
+                                                        .clicked()
+                                                    {
+                                                        self.mode = DownloadMode::Audio;
+                                                    }
+                                                });
+                                            });
+                                            ui.add_space(20.0 * scale);
+                                            ui.horizontal(|ui| {
+                                                if ui
+                                                    .add_enabled(
+                                                        !self.busy,
+                                                        egui::Button::new(
+                                                            RichText::new("開始下載")
+                                                                .size(14.0 * scale)
+                                                                .strong(),
+                                                        )
+                                                        .fill(accent)
                                                         .min_size(egui::vec2(
-                                                            132.0 * scale,
-                                                            38.0 * scale,
-                                                        ))
-                                                        .fill(if video_selected {
-                                                            Color32::from_rgb(31, 112, 137)
-                                                        } else {
-                                                            Color32::from_rgb(34, 41, 54)
-                                                        })
-                                                        .stroke(egui::Stroke::new(
-                                                            1.0,
-                                                            if video_selected {
-                                                                accent
-                                                            } else {
-                                                                Color32::from_rgb(54, 64, 80)
-                                                            },
+                                                            170.0 * scale,
+                                                            46.0 * scale,
                                                         )),
-                                                )
-                                                .clicked()
-                                            {
-                                                self.mode = DownloadMode::Video;
-                                            }
-
-                                            if ui
-                                                .add(
-                                                    egui::Button::new("音樂　MP3")
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.start();
+                                                }
+                                                if ui
+                                                    .add_enabled(
+                                                        self.busy,
+                                                        egui::Button::new(
+                                                            RichText::new("取消下載")
+                                                                .size(13.0 * scale),
+                                                        )
                                                         .min_size(egui::vec2(
-                                                            132.0 * scale,
-                                                            38.0 * scale,
-                                                        ))
-                                                        .fill(if audio_selected {
-                                                            Color32::from_rgb(31, 112, 137)
-                                                        } else {
-                                                            Color32::from_rgb(34, 41, 54)
-                                                        })
-                                                        .stroke(egui::Stroke::new(
-                                                            1.0,
-                                                            if audio_selected {
-                                                                accent
-                                                            } else {
-                                                                Color32::from_rgb(54, 64, 80)
-                                                            },
+                                                            110.0 * scale,
+                                                            46.0 * scale,
                                                         )),
-                                                )
-                                                .clicked()
-                                            {
-                                                self.mode = DownloadMode::Audio;
-                                            }
+                                                    )
+                                                    .clicked()
+                                                {
+                                                    self.cancel();
+                                                }
+                                            });
                                         });
+
+                                        let info_width = ui.available_width();
+                                        if info_width > 100.0 * scale {
+                                            ui.vertical(|ui| {
+                                                // Align the panel's top with the format buttons,
+                                                // then extend it to the bottom of the download button.
+                                                ui.add_space(30.0 * scale);
+                                                egui::Frame::NONE
+                                                    .fill(Color32::from_rgb(19, 25, 35))
+                                                    .stroke(egui::Stroke::new(
+                                                        1.0,
+                                                        Color32::from_rgb(36, 45, 59),
+                                                    ))
+                                                    .inner_margin(egui::Margin::symmetric(
+                                                        (10.0 * scale).round() as i8,
+                                                        (8.0 * scale).round() as i8,
+                                                    ))
+                                                    .show(ui, |ui| {
+                                                        ui.set_min_width(info_width);
+                                                        ui.set_max_width(info_width);
+                                                        ui.set_min_height(100.0 * scale);
+                                                        ui.vertical(|ui| {
+                                                            if self.busy {
+                                                                ui.label(
+                                                                    RichText::new(&self.status)
+                                                                        .size(13.0 * scale)
+                                                                        .color(accent),
+                                                                );
+                                                                ui.add(progress_bar(
+                                                                    self.progress,
+                                                                    accent,
+                                                                    12.0 * scale,
+                                                                ));
+                                                            } else {
+                                                                ui.add_space(
+                                                                    (ui.available_height() / 4.0)
+                                                                        .max(0.0),
+                                                                );
+                                                                ui.label(
+                                                                    RichText::new(&self.status)
+                                                                        .size(13.0 * scale)
+                                                                        .color(accent),
+                                                                );
+                                                                ui.add_space(
+                                                                    (ui.available_height() / 3.0)
+                                                                        .max(0.0),
+                                                                );
+                                                                ui.label(
+                                                                    RichText::new(
+                                                                        if self.title.is_empty() {
+                                                                            "等待影片資訊…"
+                                                                        } else {
+                                                                            &self.title
+                                                                        },
+                                                                    )
+                                                                    .size(13.0 * scale)
+                                                                    .color(
+                                                                        if self.title.is_empty() {
+                                                                            muted
+                                                                        } else {
+                                                                            Color32::from_rgb(
+                                                                                218, 226, 238,
+                                                                            )
+                                                                        },
+                                                                    ),
+                                                                );
+                                                            }
+                                                        });
+                                                    });
+                                            });
+                                        }
                                     });
 
                                     if entry_response.lost_focus()
@@ -620,85 +784,6 @@ impl eframe::App for DownloaderApp {
                                     {
                                         self.start();
                                     }
-
-                                    ui.add_space(20.0 * scale);
-
-                                    ui.horizontal(|ui| {
-                                        if ui
-                                            .add_enabled(
-                                                !self.busy,
-                                                egui::Button::new(
-                                                    RichText::new("開始下載")
-                                                        .size(14.0 * scale)
-                                                        .strong(),
-                                                )
-                                                .fill(accent)
-                                                .min_size(egui::vec2(170.0 * scale, 46.0 * scale)),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.start();
-                                        }
-
-                                        if ui
-                                            .add_enabled(
-                                                self.busy,
-                                                egui::Button::new(
-                                                    RichText::new("取消下載").size(13.0 * scale),
-                                                )
-                                                .min_size(egui::vec2(110.0 * scale, 46.0 * scale)),
-                                            )
-                                            .clicked()
-                                        {
-                                            self.cancel();
-                                        }
-                                    });
-                                });
-
-                            ui.add_space(16.0 * scale);
-
-                            egui::Frame::NONE
-                                .fill(Color32::from_rgb(19, 25, 35))
-                                .stroke(egui::Stroke::new(1.0, Color32::from_rgb(36, 45, 59)))
-                                .inner_margin(egui::Margin::same(card_margin))
-                                .show(ui, |ui| {
-                                    ui.horizontal(|ui| {
-                                        ui.label(
-                                            RichText::new(match self.mode {
-                                                DownloadMode::Video => "下載影片",
-                                                DownloadMode::Audio => "下載音樂",
-                                            })
-                                            .size(14.0 * scale)
-                                            .strong(),
-                                        );
-                                        ui.with_layout(
-                                            egui::Layout::right_to_left(egui::Align::Center),
-                                            |ui| {
-                                                ui.label(
-                                                    RichText::new(&self.status)
-                                                        .size(12.0 * scale)
-                                                        .color(accent),
-                                                );
-                                            },
-                                        );
-                                    });
-
-                                    ui.add_space(8.0 * scale);
-                                    ui.label(
-                                        RichText::new(if self.title.is_empty() {
-                                            "等待影片資訊…"
-                                        } else {
-                                            &self.title
-                                        })
-                                        .size(13.0 * scale)
-                                        .color(
-                                            if self.title.is_empty() {
-                                                muted
-                                            } else {
-                                                Color32::from_rgb(218, 226, 238)
-                                            },
-                                        ),
-                                    );
                                 });
                         }
                     },
@@ -710,6 +795,19 @@ impl eframe::App for DownloaderApp {
                 .open(&mut self.versions_open)
                 .show(&ctx, |ui| {
                     ui.label(&self.versions);
+                    ui.separator();
+                    ui.label(&self.update_status);
+                    if self.update_asset.is_some()
+                        && !self.updating
+                        && ui.button("立即更新").clicked()
+                    {
+                        self.updating = true;
+                        self.update_status = "正在下載並安裝更新…".into();
+                        download_update(self.update_asset.clone().unwrap(), self.tx.clone());
+                    }
+                    if self.updating {
+                        ui.spinner();
+                    }
                 });
         }
 
@@ -779,6 +877,158 @@ fn download_dir() -> PathBuf {
     }
 
     app_dir()
+}
+
+const RELEASE_API: &str =
+    "https://api.github.com/repos/cloverdefa/video-downloader/releases/latest";
+
+fn check_for_update(tx: Sender<Event>) {
+    thread::spawn(move || {
+        let result = (|| -> Result<Option<(String, String)>, String> {
+            let output = Command::new("curl")
+                .args(["-fLsS", "-A", "video-downloader", RELEASE_API])
+                .output()
+                .map_err(|e| format!("無法連線 GitHub：{e}"))?;
+            if !output.status.success() {
+                return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+            }
+            let json = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
+            let tag = json_string_field(&json, "tag_name").ok_or("GitHub 回應缺少版本號")?;
+            let version = tag.trim_start_matches('v');
+            if !is_newer_version(version, embedded::APP_VERSION) {
+                return Ok(None);
+            }
+            if !cfg!(target_arch = "x86_64") {
+                return Err("目前僅提供 Windows x64 與 Linux x86_64 更新".into());
+            }
+            let asset_name = if cfg!(target_os = "windows") {
+                "video_downloader.exe"
+            } else if cfg!(target_os = "linux") {
+                "video_downloader_omarchy_wsl_x86_64.tar.gz"
+            } else {
+                return Err("目前不支援此作業系統的自動更新".into());
+            };
+            let url = asset_url_for_name(&json, asset_name)
+                .ok_or("此版本沒有適用於本作業系統的更新檔")?;
+            Ok(Some((version.to_owned(), url)))
+        })();
+        let _ = tx.send(Event::UpdateChecked(result));
+    });
+}
+
+fn download_update((_version, url): (String, String), tx: Sender<Event>) {
+    thread::spawn(move || {
+        let result = install_update(&url);
+        let _ = tx.send(Event::UpdateReady(result));
+    });
+}
+
+fn install_update(url: &str) -> Result<(), String> {
+    let executable = env::current_exe().map_err(|e| e.to_string())?;
+    let parent = executable.parent().ok_or("找不到程式所在資料夾")?;
+    let stage = parent.join(if cfg!(windows) {
+        "video_downloader.update.exe"
+    } else {
+        "video_downloader.update.tar.gz"
+    });
+    let download = Command::new("curl")
+        .args(["-fLsS", "-A", "video-downloader", url, "-o"])
+        .arg(&stage)
+        .status()
+        .map_err(|e| format!("無法下載更新：{e}"))?;
+    if !download.success() {
+        return Err("下載更新檔失敗".into());
+    }
+
+    #[cfg(windows)]
+    {
+        let script = parent.join("video_downloader_update.ps1");
+        let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
+        let contents = format!(
+            "$ErrorActionPreference='Stop'\nWait-Process -Id {}\nMove-Item -Force '{}' '{}'\nStart-Process '{}'\nRemove-Item -Force $MyInvocation.MyCommand.Path\n",
+            std::process::id(),
+            quote(&stage),
+            quote(&executable),
+            quote(&executable)
+        );
+        fs::write(&script, contents).map_err(|e| e.to_string())?;
+        Command::new("powershell")
+            .args(["-NoProfile", "-ExecutionPolicy", "Bypass", "-File"])
+            .arg(script)
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    #[cfg(target_os = "linux")]
+    {
+        let temp = parent.join(".video_downloader_update");
+        fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
+        let status = Command::new("tar")
+            .arg("-xzf")
+            .arg(&stage)
+            .arg("-C")
+            .arg(&temp)
+            .status()
+            .map_err(|e| e.to_string())?;
+        if !status.success() {
+            return Err("無法解壓更新檔".into());
+        }
+        let replacement = temp.join("video_downloader/video_downloader");
+        if !replacement.is_file() {
+            return Err("更新檔缺少程式".into());
+        }
+        let shell_quote = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"));
+        let script = format!(
+            "while kill -0 {} 2>/dev/null; do sleep 1; done; cp {} {}; chmod +x {}; {} & rm -f {}; rm -rf {}",
+            std::process::id(),
+            shell_quote(&replacement),
+            shell_quote(&executable),
+            shell_quote(&executable),
+            shell_quote(&executable),
+            shell_quote(&stage),
+            shell_quote(&temp)
+        );
+        Command::new("sh")
+            .args(["-c", &script])
+            .spawn()
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    let parse = |s: &str| {
+        s.split('.')
+            .map(|p| p.parse::<u64>().unwrap_or(0))
+            .collect::<Vec<_>>()
+    };
+    let (a, b) = (parse(latest), parse(current));
+    (0..a.len().max(b.len()))
+        .find_map(|i| {
+            let (x, y) = (*a.get(i).unwrap_or(&0), *b.get(i).unwrap_or(&0));
+            (x != y).then_some(x > y)
+        })
+        .unwrap_or(false)
+}
+
+fn json_string_field(json: &str, field: &str) -> Option<String> {
+    let marker = format!("\"{field}\"");
+    let rest = json.get(json.find(&marker)? + marker.len()..)?;
+    let value = rest.get(rest.find(':')? + 1..)?.trim_start();
+    let value = value.strip_prefix('"')?;
+    let end = value.find('"')?;
+    Some(value[..end].replace("\\/", "/").replace("\\\"", "\""))
+}
+
+fn asset_url_for_name(json: &str, name: &str) -> Option<String> {
+    let mut rest = json;
+    while let Some(pos) = rest.find("\"name\"") {
+        rest = &rest[pos..];
+        if json_string_field(rest, "name").as_deref() == Some(name) {
+            return json_string_field(rest, "browser_download_url");
+        }
+        rest = rest.get(6..)?;
+    }
+    None
 }
 
 fn tool_path(name: &str) -> Option<PathBuf> {
@@ -890,7 +1140,7 @@ fn main() -> eframe::Result {
     let icon = app_icon();
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([760.0, 580.0])
+            .with_inner_size([760.0, 500.0])
             .with_min_inner_size([320.0, 160.0])
             .with_title("影片下載器")
             .with_app_id("video-downloader")
