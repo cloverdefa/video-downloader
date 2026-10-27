@@ -879,22 +879,50 @@ fn download_dir() -> PathBuf {
     app_dir()
 }
 
-const RELEASE_API: &str =
-    "https://api.github.com/repos/cloverdefa/video-downloader/releases/latest";
+const RELEASE_LATEST: &str =
+    "https://github.com/cloverdefa/video-downloader/releases/latest";
+const RELEASE_TAG_PREFIX: &str =
+    "https://github.com/cloverdefa/video-downloader/releases/tag/";
+const RELEASE_DOWNLOAD_PREFIX: &str =
+    "https://github.com/cloverdefa/video-downloader/releases/latest/download/";
 
 fn check_for_update(tx: Sender<Event>) {
     thread::spawn(move || {
         let result = (|| -> Result<Option<(String, String)>, String> {
+            // 透過 GitHub 網頁的重新導向取得最新 Release 標籤，不呼叫 REST API。
+            // Windows 使用 NUL，Unix-like 系統使用 /dev/null，避免把 HTML 寫入 stdout。
+            let null_device = if cfg!(windows) { "NUL" } else { "/dev/null" };
             let output = Command::new("curl")
-                .args(["-fLsS", "-A", "video-downloader", RELEASE_API])
+                .args([
+                    "-fLsS",
+                    "--connect-timeout", "10",
+                    "--max-time", "30",
+                    "-A", "video-downloader",
+                    "-o", null_device,
+                    "-w", "%{url_effective}",
+                    RELEASE_LATEST,
+                ])
                 .output()
-                .map_err(|e| format!("無法連線 GitHub：{e}"))?;
+                .map_err(|e| format!("無法啟動 curl：{e}"))?;
             if !output.status.success() {
-                return Err(String::from_utf8_lossy(&output.stderr).trim().to_owned());
+                let details = String::from_utf8_lossy(&output.stderr).trim().to_owned();
+                return Err(if details.is_empty() {
+                    format!("無法取得 GitHub 最新 Release（curl 結束碼：{}）", output.status)
+                } else {
+                    format!("無法取得 GitHub 最新 Release：{details}")
+                });
             }
-            let json = String::from_utf8(output.stdout).map_err(|e| e.to_string())?;
-            let tag = json_string_field(&json, "tag_name").ok_or("GitHub 回應缺少版本號")?;
-            let version = tag.trim_start_matches('v');
+
+            let effective_url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
+            let tag = effective_url
+                .strip_prefix(RELEASE_TAG_PREFIX)
+                .ok_or_else(|| format!("無法從 GitHub Release 網址解析版本標籤：{effective_url}"))?;
+            let tag = tag.trim_end_matches('/');
+            if tag.is_empty() || tag.contains('/') || tag.contains('?') || tag.contains('#') {
+                return Err(format!("GitHub 回傳了無效的 Release 標籤：{tag}"));
+            }
+
+            let version = tag.strip_prefix('v').unwrap_or(tag);
             if !is_newer_version(version, embedded::APP_VERSION) {
                 return Ok(None);
             }
@@ -908,8 +936,9 @@ fn check_for_update(tx: Sender<Event>) {
             } else {
                 return Err("目前不支援此作業系統的自動更新".into());
             };
-            let url = asset_url_for_name(&json, asset_name)
-                .ok_or("此版本沒有適用於本作業系統的更新檔")?;
+
+            // GitHub 會將此固定資產網址重新導向至最新 Release 中同名的檔案。
+            let url = format!("{RELEASE_DOWNLOAD_PREFIX}{asset_name}");
             Ok(Some((version.to_owned(), url)))
         })();
         let _ = tx.send(Event::UpdateChecked(result));
@@ -1008,27 +1037,6 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
             (x != y).then_some(x > y)
         })
         .unwrap_or(false)
-}
-
-fn json_string_field(json: &str, field: &str) -> Option<String> {
-    let marker = format!("\"{field}\"");
-    let rest = json.get(json.find(&marker)? + marker.len()..)?;
-    let value = rest.get(rest.find(':')? + 1..)?.trim_start();
-    let value = value.strip_prefix('"')?;
-    let end = value.find('"')?;
-    Some(value[..end].replace("\\/", "/").replace("\\\"", "\""))
-}
-
-fn asset_url_for_name(json: &str, name: &str) -> Option<String> {
-    let mut rest = json;
-    while let Some(pos) = rest.find("\"name\"") {
-        rest = &rest[pos..];
-        if json_string_field(rest, "name").as_deref() == Some(name) {
-            return json_string_field(rest, "browser_download_url");
-        }
-        rest = rest.get(6..)?;
-    }
-    None
 }
 
 fn tool_path(name: &str) -> Option<PathBuf> {
@@ -1173,3 +1181,4 @@ fn app_icon() -> std::sync::Arc<egui::IconData> {
         height: info.height,
     })
 }
+
