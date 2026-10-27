@@ -742,23 +742,16 @@ impl eframe::App for DownloaderApp {
                                                                             )),
                                                                     );
                                                                 }
-                                                                ui.add(progress_bar(
-                                                                    self.progress,
-                                                                    accent,
-                                                                    12.0 * scale,
-                                                                ));
                                                             } else {
                                                                 ui.add_space(
                                                                     (ui.available_height() / 4.0)
                                                                         .max(0.0),
                                                                 );
-                                                                if !self.status.is_empty() {
-                                                                    ui.label(
-                                                                        RichText::new(&self.status)
-                                                                            .size(13.0 * scale)
-                                                                            .color(accent),
-                                                                    );
-                                                                }
+                                                                ui.label(
+                                                                    RichText::new(&self.status)
+                                                                        .size(13.0 * scale)
+                                                                        .color(accent),
+                                                                );
                                                                 ui.add_space(
                                                                     (ui.available_height() / 3.0)
                                                                         .max(0.0),
