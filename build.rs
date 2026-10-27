@@ -1,6 +1,24 @@
 use std::{env, fs, path::PathBuf};
 
+// 只有在 Windows 主機上編譯時才有 winresource；
+// 再用 CARGO_CFG_TARGET_OS 確認目標平台也是 Windows。
+#[cfg(windows)]
+fn embed_windows_icon() {
+    println!("cargo:rerun-if-changed=assets/app-icon.ico");
+
+    if env::var("CARGO_CFG_TARGET_OS").is_ok_and(|os| os == "windows") {
+        let mut res = winresource::WindowsResource::new();
+        res.set_icon("assets/app-icon.ico");
+        res.compile().expect("embed Windows icon");
+    }
+}
+
+#[cfg(not(windows))]
+fn embed_windows_icon() {}
+
 fn main() {
+    embed_windows_icon();
+
     println!("cargo:rerun-if-env-changed=APP_VERSION");
     println!("cargo:rerun-if-changed=bin");
     let out = PathBuf::from(env::var_os("OUT_DIR").expect("OUT_DIR is set"));
