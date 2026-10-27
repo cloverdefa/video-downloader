@@ -1173,3 +1173,4 @@ fn app_icon() -> std::sync::Arc<egui::IconData> {
         height: info.height,
     })
 }
+
