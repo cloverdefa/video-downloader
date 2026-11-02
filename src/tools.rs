@@ -58,8 +58,19 @@ fn home_dir() -> Option<PathBuf> {
         .map(PathBuf::from)
 }
 
+/// Windows 的系統預設下載資料夾（Known Folder，即使被搬到別的磁碟也能正確取得）。
+#[cfg(windows)]
+fn system_download_dir() -> Option<PathBuf> {
+    dirs::download_dir()
+}
+
+#[cfg(not(windows))]
+fn system_download_dir() -> Option<PathBuf> {
+    None
+}
+
 /// 下載資料夾：依序找 `~/Downloads`、`~/downloads`、`~/下載`，
-/// 都不存在時退回程式所在目錄。
+/// 接著是 Windows 系統預設下載資料夾，都不存在時退回程式所在目錄。
 pub fn download_dir() -> PathBuf {
     const CANDIDATES: [&str; 3] = ["Downloads", "downloads", "下載"];
 
@@ -70,6 +81,7 @@ pub fn download_dir() -> PathBuf {
                 .map(|name| home.join(name))
                 .find(|path| path.is_dir())
         })
+        .or_else(|| system_download_dir().filter(|path| path.is_dir()))
         .unwrap_or_else(app_dir)
 }
 
