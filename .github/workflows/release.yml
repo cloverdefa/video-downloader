@@ -920,7 +920,7 @@ jobs:
           test -s dist/video_downloader_omarchy_wsl_x86_64.tar.gz
 
       - name: Upload Linux artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v7
         with:
           name: video_downloader-linux-x86_64
           path: dist/video_downloader_omarchy_wsl_x86_64.tar.gz
