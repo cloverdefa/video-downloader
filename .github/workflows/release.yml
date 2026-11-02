@@ -856,7 +856,7 @@ jobs:
     needs:
       - version
     if: needs.version.outputs.should_release == 'true'
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-latest
     steps:
       - name: Checkout target commit
         uses: actions/checkout@v7
