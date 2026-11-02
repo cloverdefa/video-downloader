@@ -51,16 +51,38 @@ pub fn app_dir() -> PathBuf {
         .unwrap_or_default()
 }
 
-pub fn download_dir() -> PathBuf {
-    #[cfg(target_os = "macos")]
-    if let Some(downloads) = env::var_os("HOME")
-        .map(|home| PathBuf::from(home).join("Downloads"))
-        .filter(|path| path.is_dir())
-    {
-        return downloads;
-    }
+/// 使用者家目錄：優先 `HOME`（Linux / macOS / WSL），其次 `USERPROFILE`（Windows）。
+fn home_dir() -> Option<PathBuf> {
+    env::var_os("HOME")
+        .or_else(|| env::var_os("USERPROFILE"))
+        .map(PathBuf::from)
+}
 
-    app_dir()
+/// Windows 的系統預設下載資料夾（Known Folder，即使被搬到別的磁碟也能正確取得）。
+#[cfg(windows)]
+fn system_download_dir() -> Option<PathBuf> {
+    dirs::download_dir()
+}
+
+#[cfg(not(windows))]
+fn system_download_dir() -> Option<PathBuf> {
+    None
+}
+
+/// 下載資料夾：依序找 `~/Downloads`、`~/downloads`、`~/下載`，
+/// 接著是 Windows 系統預設下載資料夾，都不存在時退回程式所在目錄。
+pub fn download_dir() -> PathBuf {
+    const CANDIDATES: [&str; 3] = ["Downloads", "downloads", "下載"];
+
+    home_dir()
+        .and_then(|home| {
+            CANDIDATES
+                .iter()
+                .map(|name| home.join(name))
+                .find(|path| path.is_dir())
+        })
+        .or_else(|| system_download_dir().filter(|path| path.is_dir()))
+        .unwrap_or_else(app_dir)
 }
 
 /// 依序尋找：程式目錄 → OneDrive\bin → 內嵌工具 → PATH。
