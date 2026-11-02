@@ -332,8 +332,8 @@ fn versions_window(app: &mut DownloaderApp, ctx: &egui::Context) {
             if app.update.installable().is_some() && ui.button("立即更新").clicked() {
                 app.install_update();
             }
-            if app.update.is_installing() {
-                ui.spinner();
+            if let Some(progress) = app.update.install_progress() {
+                ui.add(progress_bar(progress, 16.0).desired_width(240.0));
             }
         });
 

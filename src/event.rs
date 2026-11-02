@@ -6,6 +6,7 @@ pub enum Event {
     Log(String),
     Finished(Result<(), String>),
     UpdateChecked(Result<Option<UpdateInfo>, String>),
+    UpdateProgress(f32),
     UpdateReady(Result<(), String>),
 }
 
