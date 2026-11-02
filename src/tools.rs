@@ -19,6 +19,9 @@ use crate::embedded;
 #[cfg(windows)]
 const CREATE_NO_WINDOW: u32 = 0x0800_0000;
 
+/// 內嵌工具解壓到暫存資料夾時使用的名稱前綴（後面接版本號）。
+const EMBEDDED_DIR_PREFIX: &str = "video-downloader-";
+
 /// 建立不會在 Windows 上彈出主控台視窗的 `Command`。
 ///
 /// 所有由 GUI 啟動的外部程式（curl、powershell、yt-dlp…）都應該使用它。
@@ -83,6 +86,31 @@ fn find_in_path(filename: &str) -> Option<PathBuf> {
         .find(|path| path.is_file())
 }
 
+fn embedded_dir_name() -> String {
+    format!("{EMBEDDED_DIR_PREFIX}{}", embedded::APP_VERSION)
+}
+
+/// 刪除暫存資料夾中舊版本留下的內嵌工具（目前版本的不動）。
+pub fn cleanup_old_embedded_dirs() {
+    let current = embedded_dir_name();
+
+    let Ok(entries) = fs::read_dir(env::temp_dir()) else {
+        return;
+    };
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let name = name.to_string_lossy();
+
+        if name.starts_with(EMBEDDED_DIR_PREFIX)
+            && name.as_ref() != current.as_str()
+            && entry.path().is_dir()
+        {
+            let _ = fs::remove_dir_all(entry.path());
+        }
+    }
+}
+
 fn embedded_tool(name: &str) -> Option<PathBuf> {
     let data: &[u8] = match name {
         "yt-dlp" => embedded::YTDLP?,
@@ -91,7 +119,7 @@ fn embedded_tool(name: &str) -> Option<PathBuf> {
         _ => return None,
     };
 
-    let directory = env::temp_dir().join(format!("video-downloader-{}", embedded::APP_VERSION));
+    let directory = env::temp_dir().join(embedded_dir_name());
     fs::create_dir_all(&directory).ok()?;
 
     let path = directory.join(tool_filename(name));

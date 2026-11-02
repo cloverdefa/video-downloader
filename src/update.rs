@@ -1,6 +1,13 @@
 //! 透過 GitHub Release 檢查並安裝更新。
 
-use std::{env, path::Path, sync::mpsc::Sender, thread};
+use std::{
+    env,
+    io::{BufRead, BufReader},
+    path::Path,
+    process::Stdio,
+    sync::mpsc::Sender,
+    thread,
+};
 
 use crate::{
     embedded,
@@ -20,6 +27,24 @@ const STAGE_FILE: &str = if cfg!(windows) {
     "video_downloader.update.tar.gz"
 };
 
+const TEMP_DIR: &str = ".video_downloader_update";
+
+/// 刪除更新過程產生的暫存檔（下載檔與解壓資料夾）。
+fn remove_update_files(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(STAGE_FILE));
+    let _ = std::fs::remove_dir_all(dir.join(TEMP_DIR));
+}
+
+/// 啟動時清掉先前失敗或中斷的更新所殘留的檔案。
+pub fn cleanup_stale_files() {
+    if let Some(dir) = env::current_exe()
+        .ok()
+        .and_then(|path| path.parent().map(Path::to_path_buf))
+    {
+        remove_update_files(&dir);
+    }
+}
+
 pub fn check_for_update(tx: Sender<Event>) {
     thread::spawn(move || {
         let _ = tx.send(Event::UpdateChecked(fetch_update_info()));
@@ -28,7 +53,8 @@ pub fn check_for_update(tx: Sender<Event>) {
 
 pub fn download_update(info: UpdateInfo, tx: Sender<Event>) {
     thread::spawn(move || {
-        let _ = tx.send(Event::UpdateReady(install_update(&info.url)));
+        let result = install_update(&info.url, &tx);
+        let _ = tx.send(Event::UpdateReady(result));
     });
 }
 
@@ -109,23 +135,77 @@ fn latest_release_tag() -> Result<String, String> {
     Ok(tag.to_owned())
 }
 
-fn install_update(url: &str) -> Result<(), String> {
+fn install_update(url: &str, tx: &Sender<Event>) -> Result<(), String> {
     let executable = env::current_exe().map_err(|e| e.to_string())?;
     let parent = executable.parent().ok_or("找不到程式所在資料夾")?;
     let stage = parent.join(STAGE_FILE);
 
-    let downloaded = hidden_command("curl")
-        .args(["-fLsS", "-A", USER_AGENT, url, "-o"])
-        .arg(&stage)
-        .status()
-        .map_err(|e| format!("無法下載更新：{e}"))?
-        .success();
+    let result = download_with_progress(url, &stage, tx)
+        .and_then(|()| apply_update(&stage, &executable));
 
-    if !downloaded {
-        return Err("下載更新檔失敗".into());
+    // 失敗時立即清掉殘留檔；成功時由更新腳本負責清理。
+    if result.is_err() {
+        remove_update_files(parent);
     }
 
-    apply_update(&stage, &executable)
+    result
+}
+
+/// 用 curl 下載，並解析 `--progress-bar` 在 stderr 輸出的百分比。
+fn download_with_progress(url: &str, dest: &Path, tx: &Sender<Event>) -> Result<(), String> {
+    let mut child = hidden_command("curl")
+        .args(["-fL", "--progress-bar", "-A", USER_AGENT, url, "-o"])
+        .arg(dest)
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| format!("無法下載更新：{e}"))?;
+
+    let mut last_error = String::new();
+
+    if let Some(stderr) = child.stderr.take() {
+        let mut reader = BufReader::new(stderr);
+        let mut chunk = Vec::new();
+
+        // 進度列以 '\r' 覆寫同一行，錯誤訊息則以 '\n' 結尾。
+        loop {
+            chunk.clear();
+            match reader.read_until(b'\r', &mut chunk) {
+                Ok(0) | Err(_) => break,
+                Ok(_) => {}
+            }
+
+            let text = String::from_utf8_lossy(&chunk);
+            for segment in text
+                .split(['\r', '\n'])
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+            {
+                if let Some(progress) = parse_curl_progress(segment) {
+                    let _ = tx.send(Event::UpdateProgress(progress));
+                } else if segment.starts_with("curl:") {
+                    last_error = segment.to_owned();
+                }
+            }
+        }
+    }
+
+    let status = child.wait().map_err(|e| e.to_string())?;
+
+    if status.success() {
+        Ok(())
+    } else if last_error.is_empty() {
+        Err("下載更新檔失敗".into())
+    } else {
+        Err(format!("下載更新檔失敗：{last_error}"))
+    }
+}
+
+fn parse_curl_progress(segment: &str) -> Option<f32> {
+    let (before, _) = segment.rsplit_once('%')?;
+    let value = before.split_whitespace().last()?.trim_start_matches('#');
+    value.parse::<f32>().ok().map(|p| p.clamp(0.0, 100.0))
 }
 
 #[cfg(windows)]
@@ -136,14 +216,17 @@ fn apply_update(stage: &Path, executable: &Path) -> Result<(), String> {
 
     let contents = format!(
         "$ErrorActionPreference='Stop'\n\
-         Wait-Process -Id {}\n\
-         Move-Item -Force '{}' '{}'\n\
-         Start-Process '{}'\n\
-         Remove-Item -Force $MyInvocation.MyCommand.Path\n",
-        std::process::id(),
-        quote(stage),
-        quote(executable),
-        quote(executable),
+         try {{\n\
+         Wait-Process -Id {pid} -ErrorAction SilentlyContinue\n\
+         Move-Item -Force '{stage}' '{exe}'\n\
+         Start-Process '{exe}'\n\
+         }} finally {{\n\
+         Remove-Item -Force -ErrorAction SilentlyContinue '{stage}'\n\
+         Remove-Item -Force -ErrorAction SilentlyContinue $MyInvocation.MyCommand.Path\n\
+         }}\n",
+        pid = std::process::id(),
+        stage = quote(stage),
+        exe = quote(executable),
     );
     std::fs::write(&script, contents).map_err(|e| e.to_string())?;
 
@@ -165,7 +248,7 @@ fn apply_update(stage: &Path, executable: &Path) -> Result<(), String> {
 #[cfg(target_os = "linux")]
 fn apply_update(stage: &Path, executable: &Path) -> Result<(), String> {
     let parent = executable.parent().ok_or("找不到程式所在資料夾")?;
-    let temp = parent.join(".video_downloader_update");
+    let temp = parent.join(TEMP_DIR);
     std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
 
     let extracted = hidden_command("tar")
@@ -234,7 +317,14 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
 
 #[cfg(test)]
 mod tests {
-    use super::is_newer_version;
+    use super::{is_newer_version, parse_curl_progress};
+
+    #[test]
+    fn parses_curl_progress() {
+        assert_eq!(parse_curl_progress("######              45.2%"), Some(45.2));
+        assert_eq!(parse_curl_progress("#### 100.0%"), Some(100.0));
+        assert_eq!(parse_curl_progress("curl: (22) error"), None);
+    }
 
     #[test]
     fn compares_versions() {

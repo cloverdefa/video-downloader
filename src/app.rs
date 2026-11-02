@@ -24,7 +24,7 @@ pub enum UpdateState {
     UpToDate,
     CheckFailed(String),
     Available(UpdateInfo),
-    Installing(UpdateInfo),
+    Installing { info: UpdateInfo, progress: f32 },
     InstallFailed(UpdateInfo, String),
     Restarting,
 }
@@ -37,7 +37,7 @@ impl UpdateState {
             Self::UpToDate => "目前已是最新版本".into(),
             Self::CheckFailed(error) => format!("檢查失敗：{error}"),
             Self::Available(info) => format!("發現新版本 v{}", info.version),
-            Self::Installing(_) => "正在下載並安裝更新…".into(),
+            Self::Installing { .. } => "正在下載並安裝更新…".into(),
             Self::InstallFailed(_, error) => format!("更新失敗：{error}"),
             Self::Restarting => "更新已完成，正在重新啟動…".into(),
         }
@@ -51,8 +51,12 @@ impl UpdateState {
         }
     }
 
-    pub fn is_installing(&self) -> bool {
-        matches!(self, Self::Installing(_))
+    /// 安裝中時回傳下載進度（0–100）。
+    pub fn install_progress(&self) -> Option<f32> {
+        match self {
+            Self::Installing { progress, .. } => Some(*progress),
+            _ => None,
+        }
     }
 }
 
@@ -78,6 +82,12 @@ pub struct DownloaderApp {
 impl DownloaderApp {
     pub fn new(cc: &eframe::CreationContext<'_>) -> Self {
         theme::apply(&cc.egui_ctx);
+
+        // 背景清理更新殘留檔與舊版本的內嵌工具，不阻塞啟動。
+        std::thread::spawn(|| {
+            update::cleanup_stale_files();
+            tools::cleanup_old_embedded_dirs();
+        });
 
         let (tx, rx) = mpsc::channel();
 
@@ -197,7 +207,10 @@ impl DownloaderApp {
 
     pub fn install_update(&mut self) {
         if let Some(info) = self.update.installable().cloned() {
-            self.update = UpdateState::Installing(info.clone());
+            self.update = UpdateState::Installing {
+                info: info.clone(),
+                progress: 0.0,
+            };
             update::download_update(info, self.tx.clone());
         }
     }
@@ -234,6 +247,11 @@ impl DownloaderApp {
                     Err(error) => UpdateState::CheckFailed(error),
                 };
             }
+            Event::UpdateProgress(value) => {
+                if let UpdateState::Installing { progress, .. } = &mut self.update {
+                    *progress = value;
+                }
+            }
             Event::UpdateReady(result) => self.on_update_ready(result),
         }
     }
@@ -262,7 +280,7 @@ impl DownloaderApp {
     }
 
     fn on_update_ready(&mut self, result: Result<(), String>) {
-        let UpdateState::Installing(info) = &self.update else {
+        let UpdateState::Installing { info, .. } = &self.update else {
             return;
         };
 
