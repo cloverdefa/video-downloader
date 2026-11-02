@@ -232,14 +232,12 @@ jobs:
             # --------------------------------------------------------
 
             if (
-              $subject -match '^(fix|chore)(\([^)]*\))?[:：]' -or
-              $subject -match '^(修正|修復)[:：]' -or
-              $subject -match '^(修正|修復)(\([^)]*\))?[:：]'
+              $subject -match '^(fix|chore|refactor|perf)(\([^)]*\))?[:：]' -or
+              $subject -match '^(修正|修復|重構|優化)(\([^)]*\))?[:：]'
             ) {
               Write-Host "Detected bump: PATCH"
               return "patch"
             }
-
 
             # --------------------------------------------------------
             # NONE
