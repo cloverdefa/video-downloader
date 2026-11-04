@@ -32,6 +32,7 @@ const TEMP_DIR: &str = ".video_downloader_update";
 /// 刪除更新過程產生的暫存檔（下載檔與解壓資料夾）。
 fn remove_update_files(dir: &Path) {
     let _ = std::fs::remove_file(dir.join(STAGE_FILE));
+    let _ = std::fs::remove_file(dir.join("video_downloader_update.ps1"));
     let _ = std::fs::remove_dir_all(dir.join(TEMP_DIR));
 }
 
@@ -42,6 +43,17 @@ pub fn cleanup_stale_files() {
         .and_then(|path| path.parent().map(Path::to_path_buf))
     {
         remove_update_files(&dir);
+    }
+
+    #[cfg(windows)]
+    if let Some(old) = env::current_exe().ok().and_then(|p| old_exe_path(&p)) {
+        // 舊版程式可能還在結束中，最多重試約 10 秒。
+        for _ in 0..20 {
+            if !old.exists() || std::fs::remove_file(&old).is_ok() {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(500));
+        }
     }
 }
 
@@ -208,41 +220,34 @@ fn parse_curl_progress(segment: &str) -> Option<f32> {
     value.parse::<f32>().ok().map(|p| p.clamp(0.0, 100.0))
 }
 
+/// 舊版 exe 改名後的備份路徑，例如 `video_downloader.exe.old`。
+#[cfg(windows)]
+fn old_exe_path(executable: &Path) -> Option<std::path::PathBuf> {
+    let mut name = executable.file_name()?.to_os_string();
+    name.push(".old");
+    Some(executable.with_file_name(name))
+}
+
+/// Windows 不允許覆寫或刪除執行中的 exe，但允許重新命名：
+/// 先把目前的 exe 改名為 `.old`，再把新版搬到原本的名稱並啟動。
+/// `.old` 會在新版啟動時（`cleanup_stale_files`）刪除。
 #[cfg(windows)]
 fn apply_update(stage: &Path, executable: &Path) -> Result<(), String> {
-    let parent = executable.parent().ok_or("找不到程式所在資料夾")?;
-    let script = parent.join("video_downloader_update.ps1");
-    let quote = |p: &Path| p.to_string_lossy().replace('\'', "''");
+    let old = old_exe_path(executable).ok_or("無法決定備份檔名")?;
+    let _ = std::fs::remove_file(&old);
 
-    let contents = format!(
-        "$ErrorActionPreference='Stop'\n\
-         try {{\n\
-         Wait-Process -Id {pid} -ErrorAction SilentlyContinue\n\
-         Move-Item -Force '{stage}' '{exe}'\n\
-         Start-Process '{exe}'\n\
-         }} finally {{\n\
-         Remove-Item -Force -ErrorAction SilentlyContinue '{stage}'\n\
-         Remove-Item -Force -ErrorAction SilentlyContinue $MyInvocation.MyCommand.Path\n\
-         }}\n",
-        pid = std::process::id(),
-        stage = quote(stage),
-        exe = quote(executable),
-    );
-    std::fs::write(&script, contents).map_err(|e| e.to_string())?;
+    std::fs::rename(executable, &old).map_err(|e| format!("無法備份目前的程式：{e}"))?;
 
-    hidden_command("powershell")
-        .args([
-            "-NoProfile",
-            "-WindowStyle",
-            "Hidden",
-            "-ExecutionPolicy",
-            "Bypass",
-            "-File",
-        ])
-        .arg(script)
+    if let Err(e) = std::fs::rename(stage, executable) {
+        // 還原，避免留下沒有 exe 的狀況。
+        let _ = std::fs::rename(&old, executable);
+        return Err(format!("無法替換程式：{e}"));
+    }
+
+    std::process::Command::new(executable)
         .spawn()
         .map(drop)
-        .map_err(|e| e.to_string())
+        .map_err(|e| format!("無法重新啟動：{e}"))
 }
 
 #[cfg(target_os = "linux")]
