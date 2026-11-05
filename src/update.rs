@@ -1,9 +1,14 @@
 //! 透過 GitHub Release 檢查並安裝更新。
+//!
+//! 流程：
+//! 1. 以重新導向取得最新 Release 標籤並比較版本。
+//! 2. 把更新檔下載到系統快取資料夾（不污染程式所在資料夾）。
+//! 3. 下載完成後才置換目前的程式並重新啟動。
 
 use std::{
     env,
     io::{BufRead, BufReader},
-    path::Path,
+    path::{Path, PathBuf},
     process::Stdio,
     sync::mpsc::Sender,
     thread,
@@ -15,60 +20,71 @@ use crate::{
     tools::hidden_command,
 };
 
+// ---------------------------------------------------------------------------
+// 常數
+// ---------------------------------------------------------------------------
+
 const USER_AGENT: &str = "video-downloader";
 const RELEASE_LATEST: &str = "https://github.com/cloverdefa/video-downloader/releases/latest";
 const RELEASE_TAG_PREFIX: &str = "https://github.com/cloverdefa/video-downloader/releases/tag/";
 const RELEASE_DOWNLOAD_PREFIX: &str =
     "https://github.com/cloverdefa/video-downloader/releases/latest/download/";
 
+/// 快取資料夾名稱：`<cache>/video-downloader/update/`。
+const APP_DIR: &str = "video-downloader";
+const UPDATE_DIR: &str = "update";
+
+/// 下載檔在快取資料夾中的檔名。
 const STAGE_FILE: &str = if cfg!(windows) {
     "video_downloader.update.exe"
 } else {
     "video_downloader.update.tar.gz"
 };
 
-const TEMP_DIR: &str = ".video_downloader_update";
+/// 解壓縮用的子資料夾（僅 Linux 使用）。
+#[cfg(target_os = "linux")]
+const EXTRACT_DIR: &str = "extract";
 
-/// 刪除更新過程產生的暫存檔（下載檔與解壓資料夾）。
-fn remove_update_files(dir: &Path) {
-    let _ = std::fs::remove_file(dir.join(STAGE_FILE));
-    let _ = std::fs::remove_file(dir.join("video_downloader_update.ps1"));
-    let _ = std::fs::remove_dir_all(dir.join(TEMP_DIR));
-}
+// ---------------------------------------------------------------------------
+// 公開 API
+// ---------------------------------------------------------------------------
 
-/// 啟動時清掉先前失敗或中斷的更新所殘留的檔案。
-pub fn cleanup_stale_files() {
-    if let Some(dir) = env::current_exe()
-        .ok()
-        .and_then(|path| path.parent().map(Path::to_path_buf))
-    {
-        remove_update_files(&dir);
-    }
-
-    #[cfg(windows)]
-    if let Some(old) = env::current_exe().ok().and_then(|p| old_exe_path(&p)) {
-        // 舊版程式可能還在結束中，最多重試約 10 秒。
-        for _ in 0..20 {
-            if !old.exists() || std::fs::remove_file(&old).is_ok() {
-                break;
-            }
-            thread::sleep(std::time::Duration::from_millis(500));
-        }
-    }
-}
-
+/// 在背景執行緒檢查是否有新版本。
 pub fn check_for_update(tx: Sender<Event>) {
     thread::spawn(move || {
         let _ = tx.send(Event::UpdateChecked(fetch_update_info()));
     });
 }
 
+/// 在背景執行緒下載並安裝更新。
 pub fn download_update(info: UpdateInfo, tx: Sender<Event>) {
     thread::spawn(move || {
         let result = install_update(&info.url, &tx);
         let _ = tx.send(Event::UpdateReady(result));
     });
 }
+
+/// 啟動時清掉先前失敗或中斷的更新所殘留的檔案。
+pub fn cleanup_stale_files() {
+    if let Ok(cache) = cache_dir() {
+        remove_update_files(&cache);
+    }
+
+    let Some(exe) = env::current_exe().ok() else {
+        return;
+    };
+
+    if let Some(dir) = exe.parent() {
+        remove_legacy_files(dir);
+    }
+
+    #[cfg(windows)]
+    cleanup_windows_leftovers(&exe);
+}
+
+// ---------------------------------------------------------------------------
+// 版本檢查
+// ---------------------------------------------------------------------------
 
 fn fetch_update_info() -> Result<Option<UpdateInfo>, String> {
     let tag = latest_release_tag()?;
@@ -147,17 +163,84 @@ fn latest_release_tag() -> Result<String, String> {
     Ok(tag.to_owned())
 }
 
+fn is_newer_version(latest: &str, current: &str) -> bool {
+    fn parse(version: &str) -> Vec<u64> {
+        version
+            .split('.')
+            .map(|part| part.parse().unwrap_or(0))
+            .collect()
+    }
+
+    let (latest, current) = (parse(latest), parse(current));
+
+    for i in 0..latest.len().max(current.len()) {
+        let (a, b) = (
+            latest.get(i).copied().unwrap_or(0),
+            current.get(i).copied().unwrap_or(0),
+        );
+        if a != b {
+            return a > b;
+        }
+    }
+
+    false
+}
+
+// ---------------------------------------------------------------------------
+// 快取資料夾與暫存檔管理
+// ---------------------------------------------------------------------------
+
+/// 更新用的快取資料夾（不存在時會建立）。
+///
+/// - Windows：`%LOCALAPPDATA%\video-downloader\update`
+/// - Linux：`$XDG_CACHE_HOME` 或 `~/.cache` 下的 `video-downloader/update`
+/// - 取不到環境變數時退回系統暫存資料夾。
+fn cache_dir() -> Result<PathBuf, String> {
+    let base = if cfg!(windows) {
+        env::var_os("LOCALAPPDATA").map(PathBuf::from)
+    } else {
+        env::var_os("XDG_CACHE_HOME")
+            .filter(|v| !v.is_empty())
+            .map(PathBuf::from)
+            .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+    }
+    .unwrap_or_else(env::temp_dir);
+
+    let dir = base.join(APP_DIR).join(UPDATE_DIR);
+    std::fs::create_dir_all(&dir).map_err(|e| format!("無法建立快取資料夾：{e}"))?;
+    Ok(dir)
+}
+
+/// 刪除快取資料夾中的更新暫存檔（下載檔與解壓資料夾）。
+fn remove_update_files(cache: &Path) {
+    let _ = std::fs::remove_file(cache.join(STAGE_FILE));
+    #[cfg(target_os = "linux")]
+    let _ = std::fs::remove_dir_all(cache.join(EXTRACT_DIR));
+}
+
+/// 清除舊版程式曾放在 exe 旁邊的殘留檔案。
+fn remove_legacy_files(dir: &Path) {
+    let _ = std::fs::remove_file(dir.join(STAGE_FILE));
+    let _ = std::fs::remove_file(dir.join("video_downloader_update.ps1"));
+    let _ = std::fs::remove_dir_all(dir.join(".video_downloader_update"));
+}
+
+// ---------------------------------------------------------------------------
+// 下載
+// ---------------------------------------------------------------------------
+
 fn install_update(url: &str, tx: &Sender<Event>) -> Result<(), String> {
     let executable = env::current_exe().map_err(|e| e.to_string())?;
-    let parent = executable.parent().ok_or("找不到程式所在資料夾")?;
-    let stage = parent.join(STAGE_FILE);
+    let cache = cache_dir()?;
+    let stage = cache.join(STAGE_FILE);
 
+    // 先完整下載到快取，成功後才置換程式。
     let result = download_with_progress(url, &stage, tx)
-        .and_then(|()| apply_update(&stage, &executable));
+        .and_then(|()| apply_update(&stage, &cache, &executable));
 
-    // 失敗時立即清掉殘留檔；成功時由更新腳本負責清理。
+    // 失敗時立即清掉殘留檔；Linux 成功時由更新腳本負責清理。
     if result.is_err() {
-        remove_update_files(parent);
+        remove_update_files(&cache);
     }
 
     result
@@ -220,27 +303,64 @@ fn parse_curl_progress(segment: &str) -> Option<f32> {
     value.parse::<f32>().ok().map(|p| p.clamp(0.0, 100.0))
 }
 
-/// 舊版 exe 改名後的備份路徑，例如 `video_downloader.exe.old`。
+// ---------------------------------------------------------------------------
+// 置換程式：Windows
+// ---------------------------------------------------------------------------
+
+/// 在 exe 旁邊產生同名加後綴的路徑，例如 `video_downloader.exe.old`。
 #[cfg(windows)]
-fn old_exe_path(executable: &Path) -> Option<std::path::PathBuf> {
+fn sibling_with_suffix(executable: &Path, suffix: &str) -> Option<PathBuf> {
     let mut name = executable.file_name()?.to_os_string();
-    name.push(".old");
+    name.push(suffix);
     Some(executable.with_file_name(name))
 }
 
-/// Windows 不允許覆寫或刪除執行中的 exe，但允許重新命名：
-/// 先把目前的 exe 改名為 `.old`，再把新版搬到原本的名稱並啟動。
-/// `.old` 會在新版啟動時（`cleanup_stale_files`）刪除。
+/// 清除 Windows 更新留下的 `.new`（中斷的更新）與 `.old`（上一版備份）。
 #[cfg(windows)]
-fn apply_update(stage: &Path, executable: &Path) -> Result<(), String> {
-    let old = old_exe_path(executable).ok_or("無法決定備份檔名")?;
+fn cleanup_windows_leftovers(executable: &Path) {
+    if let Some(new) = sibling_with_suffix(executable, ".new") {
+        let _ = std::fs::remove_file(new);
+    }
+
+    if let Some(old) = sibling_with_suffix(executable, ".old") {
+        // 舊版程式可能還在結束中，最多重試約 10 秒。
+        for _ in 0..20 {
+            if !old.exists() || std::fs::remove_file(&old).is_ok() {
+                break;
+            }
+            thread::sleep(std::time::Duration::from_millis(500));
+        }
+    }
+}
+
+/// Windows 不允許覆寫或刪除執行中的 exe，但允許重新命名：
+///
+/// 1. 把快取中的下載檔搬到 exe 旁的 `.new`（跨磁碟機時改用複製）
+/// 2. 目前的 exe 改名為 `.old`
+/// 3. `.new` 改名為正式名稱並啟動
+///
+/// 任一步失敗都會還原，`.old` 會在新版啟動時刪除。
+#[cfg(windows)]
+fn apply_update(stage: &Path, _cache: &Path, executable: &Path) -> Result<(), String> {
+    let old = sibling_with_suffix(executable, ".old").ok_or("無法決定備份檔名")?;
+    let new = sibling_with_suffix(executable, ".new").ok_or("無法決定暫存檔名")?;
+
     let _ = std::fs::remove_file(&old);
+    let _ = std::fs::remove_file(&new);
 
-    std::fs::rename(executable, &old).map_err(|e| format!("無法備份目前的程式：{e}"))?;
+    // 步驟 1：搬到 exe 同一個資料夾，確保後續 rename 不會跨磁碟機。
+    move_file(stage, &new).map_err(|e| format!("無法搬移更新檔：{e}"))?;
 
-    if let Err(e) = std::fs::rename(stage, executable) {
-        // 還原，避免留下沒有 exe 的狀況。
+    // 步驟 2：備份目前的程式。
+    if let Err(e) = std::fs::rename(executable, &old) {
+        let _ = std::fs::remove_file(&new);
+        return Err(format!("無法備份目前的程式：{e}"));
+    }
+
+    // 步驟 3：換上新版，失敗則還原，避免留下沒有 exe 的狀況。
+    if let Err(e) = std::fs::rename(&new, executable) {
         let _ = std::fs::rename(&old, executable);
+        let _ = std::fs::remove_file(&new);
         return Err(format!("無法替換程式：{e}"));
     }
 
@@ -250,10 +370,29 @@ fn apply_update(stage: &Path, executable: &Path) -> Result<(), String> {
         .map_err(|e| format!("無法重新啟動：{e}"))
 }
 
+/// 搬移檔案；跨磁碟機導致 rename 失敗時改用複製後刪除來源。
+#[cfg(windows)]
+fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
+    if std::fs::rename(from, to).is_ok() {
+        return Ok(());
+    }
+
+    std::fs::copy(from, to).map(drop).inspect_err(|_| {
+        let _ = std::fs::remove_file(to);
+    })?;
+    let _ = std::fs::remove_file(from);
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// 置換程式：Linux
+// ---------------------------------------------------------------------------
+
+/// 在快取資料夾解壓，再由背景腳本等目前程序結束後覆寫並重新啟動。
 #[cfg(target_os = "linux")]
-fn apply_update(stage: &Path, executable: &Path) -> Result<(), String> {
-    let parent = executable.parent().ok_or("找不到程式所在資料夾")?;
-    let temp = parent.join(TEMP_DIR);
+fn apply_update(stage: &Path, cache: &Path, executable: &Path) -> Result<(), String> {
+    let temp = cache.join(EXTRACT_DIR);
+    let _ = std::fs::remove_dir_all(&temp);
     std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
 
     let extracted = hidden_command("tar")
@@ -274,6 +413,7 @@ fn apply_update(stage: &Path, executable: &Path) -> Result<(), String> {
         return Err("更新檔缺少程式".into());
     }
 
+    // cp 不受跨檔案系統限制；啟動新版後再清掉快取中的下載檔與解壓資料夾。
     let quote = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"));
     let script = format!(
         "while kill -0 {} 2>/dev/null; do sleep 1; done; \
@@ -292,33 +432,18 @@ fn apply_update(stage: &Path, executable: &Path) -> Result<(), String> {
         .map_err(|e| e.to_string())
 }
 
+// ---------------------------------------------------------------------------
+// 置換程式：其他平台
+// ---------------------------------------------------------------------------
+
 #[cfg(not(any(windows, target_os = "linux")))]
-fn apply_update(_stage: &Path, _executable: &Path) -> Result<(), String> {
+fn apply_update(_stage: &Path, _cache: &Path, _executable: &Path) -> Result<(), String> {
     Err("目前不支援此作業系統的自動更新".into())
 }
 
-fn is_newer_version(latest: &str, current: &str) -> bool {
-    fn parse(version: &str) -> Vec<u64> {
-        version
-            .split('.')
-            .map(|part| part.parse().unwrap_or(0))
-            .collect()
-    }
-
-    let (latest, current) = (parse(latest), parse(current));
-
-    for i in 0..latest.len().max(current.len()) {
-        let (a, b) = (
-            latest.get(i).copied().unwrap_or(0),
-            current.get(i).copied().unwrap_or(0),
-        );
-        if a != b {
-            return a > b;
-        }
-    }
-
-    false
-}
+// ---------------------------------------------------------------------------
+// 測試
+// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
