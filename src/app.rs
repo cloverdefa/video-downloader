@@ -1,7 +1,7 @@
 //! 應用程式狀態與業務邏輯（不含繪圖）。
 
 use std::{
-    path::Path,
+    path::{Path, PathBuf},
     sync::mpsc::{self, Receiver, Sender},
     time::Duration,
 };
@@ -9,6 +9,7 @@ use std::{
 use eframe::egui;
 
 use crate::{
+    config::Settings,
     download::{self, DownloadMode},
     embedded,
     event::{Event, UpdateInfo},
@@ -71,6 +72,7 @@ pub struct DownloaderApp {
     pub versions_open: bool,
     pub versions: String,
     pub update: UpdateState,
+    pub settings: Settings,
 
     child: Option<std::process::Child>,
     logs: Vec<String>,
@@ -108,11 +110,46 @@ impl DownloaderApp {
                 tools::tool_version("deno"),
             ),
             update: UpdateState::Idle,
+            settings: Settings::load(),
             child: None,
             logs: Vec::new(),
             should_exit: false,
             rx,
             tx,
+        }
+    }
+
+    // ---------------------------------------------------------------- 設定
+
+    /// 實際使用的下載資料夾：自訂路徑存在就用，否則退回預設位置。
+    pub fn download_dir(&self) -> PathBuf {
+        self.settings
+            .download_dir
+            .clone()
+            .filter(|path| path.is_dir())
+            .unwrap_or_else(tools::default_download_dir)
+    }
+
+    pub fn choose_download_dir(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .set_title("選擇下載資料夾")
+            .set_directory(self.download_dir())
+            .pick_folder();
+
+        if let Some(path) = picked {
+            self.settings.download_dir = Some(path);
+            self.save_settings();
+        }
+    }
+
+    pub fn reset_download_dir(&mut self) {
+        self.settings.download_dir = None;
+        self.save_settings();
+    }
+
+    fn save_settings(&mut self) {
+        if let Err(error) = self.settings.save() {
+            self.error = Some(format!("無法儲存設定：{error}"));
         }
     }
 
@@ -144,7 +181,7 @@ impl DownloaderApp {
                 Some("找不到 Deno；YouTube 的可用格式或畫質可能受限。下載仍會繼續。".into());
         }
 
-        let output = tools::download_dir();
+        let output = self.download_dir();
         let ffmpeg_dir = ffmpeg.parent().unwrap_or(Path::new("."));
         let args = download::build_args(&url, self.mode, &output, ffmpeg_dir, deno.as_deref());
 
@@ -264,7 +301,7 @@ impl DownloaderApp {
             Ok(()) => {
                 self.progress = 100.0;
                 self.status = "下載完成".into();
-                tools::open_directory(&tools::download_dir());
+                tools::open_directory(&self.download_dir());
             }
             Err(error) => {
                 self.status = "下載失敗".into();
