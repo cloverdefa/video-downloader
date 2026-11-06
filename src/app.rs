@@ -9,7 +9,7 @@ use std::{
 use eframe::egui;
 
 use crate::{
-    config::Settings,
+    config::{self, Settings},
     download::{self, DownloadMode},
     embedded,
     event::{Event, UpdateInfo},
@@ -73,6 +73,7 @@ pub struct DownloaderApp {
     pub versions: String,
     pub update: UpdateState,
     pub settings: Settings,
+    pub uninstall_targets: Option<Vec<PathBuf>>,
 
     child: Option<std::process::Child>,
     logs: Vec<String>,
@@ -111,6 +112,7 @@ impl DownloaderApp {
             ),
             update: UpdateState::Idle,
             settings: Settings::load(),
+            uninstall_targets: None,
             child: None,
             logs: Vec::new(),
             should_exit: false,
@@ -120,6 +122,53 @@ impl DownloaderApp {
     }
 
     // ---------------------------------------------------------------- 設定
+
+    pub fn request_uninstall(&mut self) {
+        if self.busy {
+            self.error = Some("下載進行中，請先取消下載再解除安裝。".into());
+            return;
+        }
+
+        let mut targets: Vec<PathBuf> = config::config_dir()
+            .filter(|path| path.is_dir())
+            .into_iter()
+            .collect();
+        targets.extend(tools::embedded_dirs());
+
+        if targets.is_empty() {
+            self.error = Some("沒有找到需要移除的資料。".into());
+        } else {
+            self.uninstall_targets = Some(targets);
+        }
+    }
+
+    pub fn cancel_uninstall(&mut self) {
+        self.uninstall_targets = None;
+    }
+
+    pub fn confirm_uninstall(&mut self) {
+        let Some(targets) = self.uninstall_targets.take() else {
+            return;
+        };
+
+        let failures: Vec<String> = targets
+            .iter()
+            .filter_map(|path| {
+                std::fs::remove_dir_all(path)
+                    .err()
+                    .map(|error| format!("{}：{error}", path.display()))
+            })
+            .collect();
+
+        // 記憶體中的設定一併重置，避免之後又被寫回磁碟。
+        self.settings = Settings::default();
+
+        self.error = Some(if failures.is_empty() {
+            "已移除所有應用程式資料。程式本身（exe）不會被刪除，可手動刪除。".into()
+        } else {
+            format!("部分資料夾無法移除：\n{}", failures.join("\n"))
+        });
+    }
 
     /// 實際使用的下載資料夾：自訂路徑存在就用，否則退回預設位置。
     pub fn download_dir(&self) -> PathBuf {
