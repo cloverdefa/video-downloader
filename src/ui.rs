@@ -183,6 +183,9 @@ fn full_view(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
             entry
         };
 
+        ui.add_space(m.s(12.0));
+        save_path_row(app, ui, m);
+
         ui.add_space(m.s(18.0));
 
         ui.horizontal(|ui| {
@@ -217,6 +220,37 @@ fn header(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
                 app.open_versions();
             }
         });
+    });
+}
+
+/// 保存路徑：顯示目前實際使用的資料夾，可選擇或還原預設。
+fn save_path_row(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
+    ui.label(RichText::new("保存路徑").size(m.s(14.0)).strong());
+    ui.add_space(m.s(4.0));
+
+    let is_custom = app.settings.download_dir.is_some();
+    let path = app.download_dir();
+    let enabled = !app.busy;
+
+    ui.horizontal(|ui| {
+        ui.add_enabled_ui(enabled, |ui| {
+            if ui.button("選擇資料夾…").clicked() {
+                app.choose_download_dir();
+            }
+            if is_custom && ui.button("還原預設").clicked() {
+                app.reset_download_dir();
+            }
+        });
+
+        let suffix = if is_custom { "" } else { "（預設）" };
+        ui.add(
+            egui::Label::new(
+                RichText::new(format!("{}{suffix}", path.display()))
+                    .size(m.s(12.0))
+                    .color(PALETTE.muted),
+            )
+            .truncate(),
+        );
     });
 }
 
