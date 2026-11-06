@@ -206,15 +206,3 @@ pub fn tool_version(name: &str) -> String {
         .map(str::to_owned)
         .unwrap_or_else(|| "missing".into())
 }
-
-pub fn open_directory(path: &Path) {
-    let program = if cfg!(windows) {
-        "explorer"
-    } else if cfg!(target_os = "macos") {
-        "open"
-    } else {
-        "xdg-open"
-    };
-
-    let _ = Command::new(program).arg(path).spawn();
-}

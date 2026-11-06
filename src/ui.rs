@@ -107,6 +107,11 @@ fn url_input(
             .margin(margin),
     );
 
+    // 修改網址代表要開始新的下載，離開「下載完成」狀態。
+    if entry.changed() {
+        app.completed_dir = None;
+    }
+
     entry.context_menu(|ui| {
         if ui.button("貼上網址").clicked() {
             app.paste_url();
@@ -132,7 +137,7 @@ fn compact_view(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
             ui.add_space(m.s(4.0));
 
             let entry = url_input(app, ui, "https://…", m.s(12.0), egui::vec2(m.s(9.0), m.s(8.0)));
-            if enter_submitted(&entry, ui) {
+            if enter_submitted(&entry, ui) && app.completed_dir.is_none() {
                 app.start();
             }
         }
@@ -141,6 +146,8 @@ fn compact_view(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
 
         let (label, color) = if app.busy {
             ("取消下載", PALETTE.danger)
+        } else if app.completed_dir.is_some() {
+            ("打開資料夾", PALETTE.accent)
         } else {
             ("開始下載", PALETTE.accent)
         };
@@ -161,45 +168,14 @@ fn full_view(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
     header(app, ui, m);
     ui.add_space(m.s(24.0));
 
+    // 下載完成後切換為精簡的結果版面：隱藏下載類型與保存路徑。
+    let completed = app.completed_dir.is_some() && !app.busy;
+
     card(m).show(ui, |ui| {
-        let heading = if app.busy { "下載進度" } else { "影片網址" };
-        ui.label(RichText::new(heading).size(m.s(14.0)).strong());
-        ui.add_space(m.s(6.0));
-
-        let entry = if app.busy {
-            ui.add(progress_bar(app.progress, m.s(40.0)))
+        if completed {
+            completed_panel(app, ui, m);
         } else {
-            let entry = url_input(
-                app,
-                ui,
-                "https://www.youtube.com/watch?v=…",
-                m.s(13.0),
-                egui::vec2(m.s(12.0), m.s(12.0)),
-            );
-            ui.label(
-                RichText::new("提示：在網址欄按右鍵可貼上剪貼簿內容")
-                    .size(m.s(11.0))
-                    .color(PALETTE.muted),
-            );
-            entry
-        };
-
-        ui.add_space(m.s(12.0));
-        save_path_row(app, ui, m);
-
-        ui.add_space(m.s(18.0));
-
-        ui.horizontal(|ui| {
-            ui.vertical(|ui| controls(app, ui, m));
-
-            let info_width = ui.available_width();
-            if info_width > m.s(100.0) {
-                ui.vertical(|ui| status_panel(app, ui, m, info_width));
-            }
-        });
-
-        if enter_submitted(&entry, ui) && !app.busy {
-            app.start();
+            input_panel(app, ui, m);
         }
     });
 }
@@ -221,6 +197,102 @@ fn header(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
                 app.open_versions();
             }
         });
+    });
+}
+
+/// 輸入與下載中的版面：網址、保存路徑、下載類型與操作按鈕。
+fn input_panel(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
+    let heading = if app.busy { "下載進度" } else { "影片網址" };
+    ui.label(RichText::new(heading).size(m.s(14.0)).strong());
+    ui.add_space(m.s(6.0));
+
+    let entry = if app.busy {
+        ui.add(progress_bar(app.progress, m.s(40.0)))
+    } else {
+        let entry = url_input(
+            app,
+            ui,
+            "https://www.youtube.com/watch?v=…",
+            m.s(13.0),
+            egui::vec2(m.s(12.0), m.s(12.0)),
+        );
+        ui.label(
+            RichText::new("提示：在網址欄按右鍵可貼上剪貼簿內容")
+                .size(m.s(11.0))
+                .color(PALETTE.muted),
+        );
+        entry
+    };
+
+    ui.add_space(m.s(12.0));
+    save_path_row(app, ui, m);
+
+    ui.add_space(m.s(18.0));
+
+    ui.horizontal(|ui| {
+        ui.vertical(|ui| controls(app, ui, m));
+
+        let info_width = ui.available_width();
+        if info_width > m.s(100.0) {
+            ui.vertical(|ui| status_panel(app, ui, m, info_width));
+        }
+    });
+
+    if enter_submitted(&entry, ui) && !app.busy {
+        app.start();
+    }
+}
+
+/// 下載完成的版面：結果資訊與「打開資料夾」、「下載其他影片」。
+fn completed_panel(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
+    let location = app
+        .completed_dir
+        .as_ref()
+        .map(|dir| dir.display().to_string())
+        .unwrap_or_default();
+
+    ui.label(
+        RichText::new("下載完成")
+            .size(m.s(16.0))
+            .strong()
+            .color(PALETTE.accent),
+    );
+    ui.add_space(m.s(6.0));
+
+    ui.add(progress_bar(app.progress, m.s(40.0)));
+    ui.add_space(m.s(14.0));
+
+    if !app.title.is_empty() {
+        ui.label(
+            RichText::new(&app.title)
+                .size(m.s(13.0))
+                .color(PALETTE.title),
+        );
+    }
+    ui.add(
+        egui::Label::new(
+            RichText::new(format!("儲存於：{location}"))
+                .size(m.s(12.0))
+                .color(PALETTE.muted),
+        )
+        .truncate(),
+    );
+
+    ui.add_space(m.s(18.0));
+
+    ui.horizontal(|ui| {
+        let open = Button::new(RichText::new("打開資料夾").size(m.s(14.0)).strong())
+            .fill(PALETTE.accent)
+            .min_size(egui::vec2(m.s(170.0), m.s(46.0)));
+        if ui.add(open).clicked() {
+            app.open_download_dir();
+        }
+
+        let again = Button::new(RichText::new("下載其他影片").size(m.s(13.0)))
+            .min_size(egui::vec2(m.s(130.0), m.s(46.0)));
+        if ui.add(again).clicked() {
+            app.new_download();
+        }
     });
 }
 
@@ -383,6 +455,7 @@ fn versions_window(app: &mut DownloaderApp, ctx: &egui::Context) {
     app.versions_open = open;
 }
 
+/// 解除安裝確認視窗：列出將被刪除的資料夾，讓使用者選擇是或否。
 fn uninstall_window(app: &mut DownloaderApp, ctx: &egui::Context) {
     let Some(targets) = app.uninstall_targets.clone() else {
         return;
@@ -402,10 +475,7 @@ fn uninstall_window(app: &mut DownloaderApp, ctx: &egui::Context) {
             for path in &targets {
                 ui.label(RichText::new(path.display().to_string()).monospace());
             }
-            ui.label(
-                RichText::new("此動作無法復原。")
-                    .color(PALETTE.danger),
-            );
+            ui.label(RichText::new("此動作無法復原。").color(PALETTE.danger));
 
             ui.horizontal(|ui| {
                 let yes = Button::new("是，移除").fill(PALETTE.danger);
