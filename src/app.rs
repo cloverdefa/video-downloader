@@ -75,6 +75,8 @@ pub struct DownloaderApp {
     pub settings: Settings,
     /// `Some` 代表解除安裝確認視窗開啟中，內容為即將刪除的資料夾。
     pub uninstall_targets: Option<Vec<PathBuf>>,
+    /// 剛下載完成時的保存路徑；有值時介面會切換為「下載完成」版面。
+    pub completed_dir: Option<PathBuf>,
 
     child: Option<std::process::Child>,
     logs: Vec<String>,
@@ -114,6 +116,7 @@ impl DownloaderApp {
             update: UpdateState::Idle,
             settings: Settings::load(),
             uninstall_targets: None,
+            completed_dir: None,
             child: None,
             logs: Vec::new(),
             should_exit: false,
@@ -247,6 +250,7 @@ impl DownloaderApp {
         let ffmpeg_dir = ffmpeg.parent().unwrap_or(Path::new("."));
         let args = download::build_args(&url, self.mode, &output, ffmpeg_dir, deno.as_deref());
 
+        self.completed_dir = None;
         self.title.clear();
         self.progress = 0.0;
         self.logs.clear();
@@ -267,21 +271,43 @@ impl DownloaderApp {
     pub fn cancel(&mut self) {
         self.kill_child();
         self.busy = false;
+        self.completed_dir = None;
         self.progress = 0.0;
         self.status = "已取消下載".into();
     }
 
+    /// 精簡版面的主按鈕：下載中取消、完成後開啟資料夾、其餘開始下載。
     pub fn toggle_download(&mut self) {
         if self.busy {
             self.cancel();
+        } else if self.completed_dir.is_some() {
+            self.open_download_dir();
         } else {
             self.start();
         }
     }
 
+    pub fn open_download_dir(&self) {
+        if let Some(dir) = &self.completed_dir {
+            tools::open_directory(dir);
+        }
+    }
+
+    /// 離開「下載完成」版面，回到可輸入新網址的狀態。
+    pub fn new_download(&mut self) {
+        self.completed_dir = None;
+        self.url.clear();
+        self.title.clear();
+        self.status.clear();
+        self.progress = 0.0;
+    }
+
     pub fn paste_url(&mut self) {
         match arboard::Clipboard::new().and_then(|mut clipboard| clipboard.get_text()) {
-            Ok(text) => self.url = text.trim().to_owned(),
+            Ok(text) => {
+                self.url = text.trim().to_owned();
+                self.completed_dir = None;
+            }
             Err(error) => self.error = Some(format!("無法讀取剪貼簿：{error}")),
         }
     }
@@ -363,6 +389,7 @@ impl DownloaderApp {
             Ok(()) => {
                 self.progress = 100.0;
                 self.status = "下載完成".into();
+                self.completed_dir = Some(self.download_dir());
             }
             Err(error) => {
                 self.status = "下載失敗".into();
