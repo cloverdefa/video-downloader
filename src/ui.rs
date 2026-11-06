@@ -72,6 +72,7 @@ pub fn render(app: &mut DownloaderApp, ui: &mut egui::Ui) {
     if app.versions_open && !m.compact {
         versions_window(app, &ctx);
     }
+    uninstall_window(app, &ctx);
     error_window(app, &ctx);
 }
 
@@ -369,9 +370,60 @@ fn versions_window(app: &mut DownloaderApp, ctx: &egui::Context) {
             if let Some(progress) = app.update.install_progress() {
                 ui.add(progress_bar(progress, 16.0).desired_width(240.0));
             }
+
+            ui.separator();
+            if ui
+                .add_enabled(!app.busy, Button::new("解除安裝…"))
+                .clicked()
+            {
+                app.request_uninstall();
+            }
         });
 
     app.versions_open = open;
+}
+
+fn uninstall_window(app: &mut DownloaderApp, ctx: &egui::Context) {
+    let Some(targets) = app.uninstall_targets.clone() else {
+        return;
+    };
+
+    let mut open = true;
+    let mut decision: Option<bool> = None;
+
+    egui::Window::new("確認解除安裝")
+        .collapsible(false)
+        .resizable(false)
+        .open(&mut open)
+        .show(ctx, |ui| {
+            ui.set_max_width(440.0);
+
+            ui.label("即將永久刪除以下資料夾及其內容：");
+            for path in &targets {
+                ui.label(RichText::new(path.display().to_string()).monospace());
+            }
+            ui.label(
+                RichText::new("此動作無法復原。")
+                    .color(PALETTE.danger),
+            );
+
+            ui.horizontal(|ui| {
+                let yes = Button::new("是，移除").fill(PALETTE.danger);
+                if ui.add(yes).clicked() {
+                    decision = Some(true);
+                }
+                if ui.button("否").clicked() {
+                    decision = Some(false);
+                }
+            });
+        });
+
+    match decision {
+        Some(true) => app.confirm_uninstall(),
+        Some(false) => app.cancel_uninstall(),
+        None if !open => app.cancel_uninstall(),
+        None => {}
+    }
 }
 
 fn error_window(app: &mut DownloaderApp, ctx: &egui::Context) {
