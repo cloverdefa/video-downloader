@@ -363,7 +363,6 @@ impl DownloaderApp {
             Ok(()) => {
                 self.progress = 100.0;
                 self.status = "下載完成".into();
-                tools::open_directory(&self.download_dir());
             }
             Err(error) => {
                 self.status = "下載失敗".into();
