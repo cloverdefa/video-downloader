@@ -73,6 +73,7 @@ pub struct DownloaderApp {
     pub versions: String,
     pub update: UpdateState,
     pub settings: Settings,
+    /// `Some` 代表解除安裝確認視窗開啟中，內容為即將刪除的資料夾。
     pub uninstall_targets: Option<Vec<PathBuf>>,
 
     child: Option<std::process::Child>,
@@ -123,15 +124,59 @@ impl DownloaderApp {
 
     // ---------------------------------------------------------------- 設定
 
+    /// 實際使用的下載資料夾：自訂路徑存在就用，否則退回預設位置。
+    pub fn download_dir(&self) -> PathBuf {
+        self.settings
+            .download_dir
+            .clone()
+            .filter(|path| path.is_dir())
+            .unwrap_or_else(tools::default_download_dir)
+    }
+
+    pub fn choose_download_dir(&mut self) {
+        let picked = rfd::FileDialog::new()
+            .set_title("選擇下載資料夾")
+            .set_directory(self.download_dir())
+            .pick_folder();
+
+        if let Some(path) = picked {
+            self.settings.download_dir = Some(path);
+            self.save_settings();
+        }
+    }
+
+    pub fn reset_download_dir(&mut self) {
+        self.settings.download_dir = None;
+        self.save_settings();
+    }
+
+    fn save_settings(&mut self) {
+        if let Err(error) = self.settings.save() {
+            self.error = Some(format!("無法儲存設定：{error}"));
+        }
+    }
+
+    // ---------------------------------------------------------------- 解除安裝
+
+    /// 收集將被刪除的資料夾並開啟確認視窗。
     pub fn request_uninstall(&mut self) {
         if self.busy {
             self.error = Some("下載進行中，請先取消下載再解除安裝。".into());
             return;
         }
 
-        let mut targets: Vec<PathBuf> = config::config_dir()
-            .filter(|path| path.is_dir())
+        if matches!(
+            self.update,
+            UpdateState::Installing { .. } | UpdateState::Restarting
+        ) {
+            self.error = Some("正在更新中，請等更新結束後再解除安裝。".into());
+            return;
+        }
+
+        let mut targets: Vec<PathBuf> = [config::config_dir(), Some(update::cache_root())]
             .into_iter()
+            .flatten()
+            .filter(|path| path.is_dir())
             .collect();
         targets.extend(tools::embedded_dirs());
 
@@ -168,38 +213,6 @@ impl DownloaderApp {
         } else {
             format!("部分資料夾無法移除：\n{}", failures.join("\n"))
         });
-    }
-
-    /// 實際使用的下載資料夾：自訂路徑存在就用，否則退回預設位置。
-    pub fn download_dir(&self) -> PathBuf {
-        self.settings
-            .download_dir
-            .clone()
-            .filter(|path| path.is_dir())
-            .unwrap_or_else(tools::default_download_dir)
-    }
-
-    pub fn choose_download_dir(&mut self) {
-        let picked = rfd::FileDialog::new()
-            .set_title("選擇下載資料夾")
-            .set_directory(self.download_dir())
-            .pick_folder();
-
-        if let Some(path) = picked {
-            self.settings.download_dir = Some(path);
-            self.save_settings();
-        }
-    }
-
-    pub fn reset_download_dir(&mut self) {
-        self.settings.download_dir = None;
-        self.save_settings();
-    }
-
-    fn save_settings(&mut self) {
-        if let Err(error) = self.settings.save() {
-            self.error = Some(format!("無法儲存設定：{error}"));
-        }
     }
 
     // ---------------------------------------------------------------- 下載

@@ -64,6 +64,14 @@ pub fn download_update(info: UpdateInfo, tx: Sender<Event>) {
     });
 }
 
+/// 本程式在快取位置的根資料夾（不會建立），解除安裝時使用。
+///
+/// - Windows：`%LOCALAPPDATA%\video-downloader`
+/// - Linux：`$XDG_CACHE_HOME` 或 `~/.cache` 下的 `video-downloader`
+pub fn cache_root() -> PathBuf {
+    cache_base().join(APP_DIR)
+}
+
 /// 啟動時清掉先前失敗或中斷的更新所殘留的檔案。
 pub fn cleanup_stale_files() {
     if let Ok(cache) = cache_dir() {
@@ -190,13 +198,12 @@ fn is_newer_version(latest: &str, current: &str) -> bool {
 // 快取資料夾與暫存檔管理
 // ---------------------------------------------------------------------------
 
-/// 更新用的快取資料夾（不存在時會建立）。
+/// 快取位置的基底資料夾，取不到環境變數時退回系統暫存資料夾。
 ///
-/// - Windows：`%LOCALAPPDATA%\video-downloader\update`
-/// - Linux：`$XDG_CACHE_HOME` 或 `~/.cache` 下的 `video-downloader/update`
-/// - 取不到環境變數時退回系統暫存資料夾。
-fn cache_dir() -> Result<PathBuf, String> {
-    let base = if cfg!(windows) {
+/// - Windows：`%LOCALAPPDATA%`
+/// - Linux：`$XDG_CACHE_HOME` 或 `~/.cache`
+fn cache_base() -> PathBuf {
+    if cfg!(windows) {
         env::var_os("LOCALAPPDATA").map(PathBuf::from)
     } else {
         env::var_os("XDG_CACHE_HOME")
@@ -204,9 +211,12 @@ fn cache_dir() -> Result<PathBuf, String> {
             .map(PathBuf::from)
             .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
     }
-    .unwrap_or_else(env::temp_dir);
+    .unwrap_or_else(env::temp_dir)
+}
 
-    let dir = base.join(APP_DIR).join(UPDATE_DIR);
+/// 更新用的快取資料夾 `<cache_root>/update`（不存在時會建立）。
+fn cache_dir() -> Result<PathBuf, String> {
+    let dir = cache_root().join(UPDATE_DIR);
     std::fs::create_dir_all(&dir).map_err(|e| format!("無法建立快取資料夾：{e}"))?;
     Ok(dir)
 }
