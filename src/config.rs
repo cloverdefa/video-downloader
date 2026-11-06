@@ -11,8 +11,15 @@ pub struct Settings {
     pub download_dir: Option<PathBuf>,
 }
 
+const APP_DIR: &str = "video-downloader";
+
+/// 設定資料夾（Windows：`%APPDATA%\video-downloader`）。
+pub fn config_dir() -> Option<PathBuf> {
+    dirs::config_dir().map(|dir| dir.join(APP_DIR))
+}
+
 fn config_path() -> Option<PathBuf> {
-    dirs::config_dir().map(|dir| dir.join("video-downloader").join("config.json"))
+    config_dir().map(|dir| dir.join("config.json"))
 }
 
 impl Settings {

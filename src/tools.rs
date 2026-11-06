@@ -133,6 +133,25 @@ pub fn cleanup_old_embedded_dirs() {
     }
 }
 
+/// 暫存資料夾中所有由本程式解壓出的內嵌工具資料夾。
+pub fn embedded_dirs() -> Vec<PathBuf> {
+    let Ok(entries) = fs::read_dir(env::temp_dir()) else {
+        return Vec::new();
+    };
+
+    entries
+        .flatten()
+        .filter(|entry| {
+            entry
+                .file_name()
+                .to_string_lossy()
+                .starts_with(EMBEDDED_DIR_PREFIX)
+                && entry.path().is_dir()
+        })
+        .map(|entry| entry.path())
+        .collect()
+}
+
 fn embedded_tool(name: &str) -> Option<PathBuf> {
     let data: &[u8] = match name {
         "yt-dlp" => embedded::YTDLP?,
