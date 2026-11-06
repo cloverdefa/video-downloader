@@ -1,11 +1,12 @@
 [package]
 name = "video-downloader"
-version = "1.7.0"
+version = "1.13.3"
 edition = "2024"
 build = "build.rs"
 
 [dependencies]
 arboard = { version = "3.7", features = ["wayland-data-control"] }
+dirs = "6"
 eframe = { version = "0.37", default-features = false, features = [
     "default_fonts",
     "glow",
@@ -15,9 +16,9 @@ eframe = { version = "0.37", default-features = false, features = [
     "wayland",
 ] }
 png = "0.18.1"
-
-[target.'cfg(windows)'.dependencies]
-dirs = "6"
+rfd = "0.15"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"

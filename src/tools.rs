@@ -71,7 +71,7 @@ fn system_download_dir() -> Option<PathBuf> {
 
 /// 下載資料夾：依序找 `~/Downloads`、`~/downloads`、`~/下載`，
 /// 接著是 Windows 系統預設下載資料夾，都不存在時退回程式所在目錄。
-pub fn download_dir() -> PathBuf {
+pub fn default_download_dir() -> PathBuf {
     const CANDIDATES: [&str; 3] = ["Downloads", "downloads", "下載"];
 
     home_dir()

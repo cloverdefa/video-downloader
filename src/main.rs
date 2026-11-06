@@ -1,6 +1,7 @@
 #![cfg_attr(target_os = "windows", windows_subsystem = "windows")]
 
 mod app;
+mod config;
 mod download;
 mod event;
 mod theme;
@@ -23,7 +24,7 @@ const APP_TITLE: &str = "影片下載器";
 fn main() -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
-            .with_inner_size([760.0, 500.0])
+            .with_inner_size([760.0, 540.0])
             .with_min_inner_size([320.0, 160.0])
             .with_title(APP_TITLE)
             .with_app_id("video-downloader")
