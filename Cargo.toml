@@ -2,11 +2,11 @@
 name = "video-downloader"
 version = "1.14.0"
 edition = "2024"
-build = "build.rs"
+description = "yt-dlp / ffmpeg / Deno GUI 影片下載器"
+repository = "https://github.com/cloverdefa/video-downloader"
 
 [dependencies]
-arboard = { version = "3.7", features = ["wayland-data-control"] }
-dirs = "6"
+# GUI
 eframe = { version = "0.37", default-features = false, features = [
     "default_fonts",
     "glow",
@@ -15,10 +15,19 @@ eframe = { version = "0.37", default-features = false, features = [
     "x11",
     "wayland",
 ] }
-png = "0.18.1"
+arboard = { version = "3.7", features = ["wayland-data-control"] }
 rfd = "0.15"
+png = "0.18.1"
+
+# 設定檔
+dirs = "6"
 serde = { version = "1", features = ["derive"] }
 serde_json = "1"
+
+# 自動更新（update.rs）
+ureq = { version = "2", features = ["json"] }
+sha2 = "0.10"
+self_replace = "1"
 
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
