@@ -496,13 +496,14 @@ fn update_section(app: &mut DownloaderApp, ui: &mut egui::Ui) {
         .release()
         .map(|info| info.notes.trim().to_owned())
         .filter(|notes| !notes.is_empty());
-    let manual_page = app
+    let manual = app
         .update
         .release()
         .filter(|info| info.asset.is_none())
-        .map(|info| info.page.clone());
+        .map(|info| (info.page.clone(), info.asset_names.clone()));
+    let has_update = app.update.has_update();
     let can_install = app.update.installable().is_some();
-    let can_check = !app.update.busy() && !app.update.installed();
+    let can_check = !app.update.busy() && !app.update.installed() && !has_update;
 
     if let Some(notes) = notes {
         egui::CollapsingHeader::new("更新內容").show(ui, |ui| {
@@ -512,14 +513,28 @@ fn update_section(app: &mut DownloaderApp, ui: &mut egui::Ui) {
         });
     }
 
+    // 找不到此平台的安裝檔時，列出這個 release 實際上傳的檔案，方便排查命名問題。
+    if let Some((_, names)) = &manual {
+        egui::CollapsingHeader::new("此版本的檔案").show(ui, |ui| {
+            if names.is_empty() {
+                ui.label("（沒有任何檔案）");
+            }
+            for name in names {
+                ui.label(RichText::new(name).monospace());
+            }
+        });
+    }
+
     ui.horizontal(|ui| {
-        if can_install && ui.button("立即更新").clicked() {
-            app.install_update();
-        }
-        if can_check && ui.button("檢查更新").clicked() {
+        // 有新版時，「檢查更新」改成「下載更新」。
+        if can_install {
+            if ui.button("下載更新").clicked() {
+                app.install_update();
+            }
+        } else if can_check && ui.button("檢查更新").clicked() {
             app.update.check(false);
         }
-        if let Some(page) = &manual_page {
+        if let Some((page, _)) = &manual {
             ui.hyperlink_to("前往下載頁", page);
         }
     });

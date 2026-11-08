@@ -2,8 +2,8 @@
 //!
 //! 發佈資產命名（請對照 release workflow，規則見 `matches_platform`）：
 //!   Windows x86_64        : `video-downloader.exe`
-//!   Linux x86_64 / aarch64 : `video-downloader-linux-<arch>.tar.gz`
-//!                            （內含名為 `video-downloader` 的執行檔），或直接是執行檔
+//!   Linux x86_64 / aarch64 : `video-downloader-linux-<arch>.tar.gz`（也接受 .tgz、amd64/x64/arm64 等寫法）
+//!                            內含名為 `video-downloader` 的執行檔，或資產本身就是執行檔
 //! 其他平台（macOS 等）沒有對應檔案，只提示新版並引導到下載頁。
 
 use eframe::egui;
@@ -67,6 +67,8 @@ pub struct ReleaseInfo {
     pub page: String,
     /// 目前平台可自動安裝的檔案；None 代表只能手動下載。
     pub asset: Option<AssetInfo>,
+    /// 這個 release 上傳的所有檔案名稱，找不到安裝檔時用來協助排查。
+    pub asset_names: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -129,7 +131,7 @@ impl Updater {
                 format!("發現新版本 v{}", info.version)
             }
             State::Available(info) => {
-                format!("發現新版本 v{}（此平台請手動下載）", info.version)
+                format!("發現新版本 v{}（找不到此平台的安裝檔，請手動下載）", info.version)
             }
             State::Installing { .. } => "正在下載並安裝更新…".into(),
             State::Installed(v) if v.is_empty() => "更新完成，正在重新啟動…".into(),
@@ -332,9 +334,15 @@ fn describe(e: ureq::Error) -> String {
     }
 }
 
+fn is_tar_gz(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.ends_with(".tar.gz") || name.ends_with(".tgz")
+}
+
 /// 這個資產是否是目前平台可自動安裝的執行檔。
 fn matches_platform(name: &str) -> bool {
-    let name = name.to_ascii_lowercase();
+    // 底線與空白視為連字號，GitHub 上傳時也可能把空白換成句點。
+    let name = name.to_ascii_lowercase().replace(['_', ' '], "-");
     if !name.starts_with(BIN_NAME) {
         return false;
     }
@@ -343,7 +351,7 @@ fn matches_platform(name: &str) -> bool {
         cfg!(target_arch = "x86_64") && name.ends_with(".exe")
     } else if cfg!(target_os = "linux") {
         let arch: &[&str] = if cfg!(target_arch = "x86_64") {
-            &["x86_64", "amd64"]
+            &["x86-64", "amd64", "x64"]
         } else if cfg!(target_arch = "aarch64") {
             &["aarch64", "arm64"]
         } else {
@@ -351,7 +359,7 @@ fn matches_platform(name: &str) -> bool {
         };
         name.contains("linux")
             && arch.iter().any(|a| name.contains(a))
-            && (name.ends_with(".tar.gz") || !IGNORED_SUFFIXES.iter().any(|s| name.ends_with(s)))
+            && (is_tar_gz(&name) || !IGNORED_SUFFIXES.iter().any(|s| name.ends_with(s)))
     } else {
         false
     }
@@ -362,7 +370,7 @@ fn pick_asset(assets: &[GhAsset]) -> Option<&GhAsset> {
     assets
         .iter()
         .filter(|a| matches_platform(&a.name))
-        .min_by_key(|a| u8::from(!a.name.to_ascii_lowercase().ends_with(".tar.gz")))
+        .min_by_key(|a| u8::from(!is_tar_gz(&a.name)))
 }
 
 fn fetch_latest() -> Result<Option<ReleaseInfo>, String> {
@@ -378,6 +386,7 @@ fn fetch_latest() -> Result<Option<ReleaseInfo>, String> {
     if !is_newer(&release.tag_name, CURRENT_VERSION) {
         return Ok(None);
     }
+    let asset_names: Vec<String> = release.assets.iter().map(|a| a.name.clone()).collect();
     let asset = pick_asset(&release.assets).map(|a| AssetInfo {
             name: a.name.clone(),
             url: a.browser_download_url.clone(),
@@ -393,6 +402,7 @@ fn fetch_latest() -> Result<Option<ReleaseInfo>, String> {
         notes: release.body.unwrap_or_default(),
         page: release.html_url,
         asset,
+        asset_names,
     }))
 }
 
@@ -469,7 +479,7 @@ fn prepare_binary(download: &Path, dir: &Path) -> Result<PathBuf, String> {
     let is_archive = download
         .file_name()
         .and_then(|n| n.to_str())
-        .is_some_and(|n| n.to_ascii_lowercase().ends_with(".tar.gz"));
+        .is_some_and(is_tar_gz);
     let binary = if is_archive {
         extract_binary(download, dir)?
     } else {
@@ -564,6 +574,8 @@ mod tests {
     fn linux_asset_matching() {
         assert!(matches_platform("video-downloader-linux-x86_64.tar.gz"));
         assert!(matches_platform("video-downloader-linux-x86_64"));
+        assert!(matches_platform("video-downloader-linux-amd64.tar.gz"));
+        assert!(matches_platform("Video_Downloader_linux_x64.tgz"));
         assert!(!matches_platform("video-downloader-linux-x86_64.sha256"));
         assert!(!matches_platform("video-downloader-linux-aarch64.tar.gz"));
         assert!(!matches_platform("video-downloader.exe"));
