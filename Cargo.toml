@@ -1,6 +1,6 @@
 [package]
 name = "video-downloader"
-version = "1.14.0"
+version = "1.17.0"
 edition = "2024"
 description = "yt-dlp / ffmpeg / Deno GUI 影片下載器"
 repository = "https://github.com/cloverdefa/video-downloader"
