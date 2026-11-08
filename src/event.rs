@@ -5,14 +5,4 @@ pub enum Event {
     Progress(f32),
     Log(String),
     Finished(Result<(), String>),
-    UpdateChecked(Result<Option<UpdateInfo>, String>),
-    UpdateProgress(f32),
-    UpdateReady(Result<(), String>),
-}
-
-/// 可用的新版本資訊。
-#[derive(Debug, Clone)]
-pub struct UpdateInfo {
-    pub version: String,
-    pub url: String,
 }
