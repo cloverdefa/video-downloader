@@ -1,476 +1,609 @@
-//! 透過 GitHub Release 檢查並安裝更新。
+//! 從 GitHub Releases 檢查新版本，並下載、驗證、替換目前執行檔。
 //!
-//! 流程：
-//! 1. 以重新導向取得最新 Release 標籤並比較版本。
-//! 2. 把更新檔下載到系統快取資料夾（不污染程式所在資料夾）。
-//! 3. 下載完成後才置換目前的程式並重新啟動。
+//! 發佈資產命名（請對照 release workflow，規則見 `matches_platform`）：
+//!   Windows x86_64         : `video_downloader.exe`
+//!   Linux x86_64 / aarch64 : 例如 `video_downloader_omarchy_wsl_x86_64.tar.gz`
+//!                            （名稱含 linux/omarchy/wsl 與架構；也接受 .tgz、amd64/x64/arm64）
+//!                            內含名為 `video-downloader` 的執行檔，或資產本身就是執行檔
+//! 其他平台（macOS 等）沒有對應檔案，只提示新版並引導到下載頁。
 
+use eframe::egui;
+use serde::Deserialize;
+use sha2::{Digest, Sha256};
 use std::{
-    env,
-    io::{BufRead, BufReader},
+    fs::File,
+    io::{Read, Write},
     path::{Path, PathBuf},
-    process::Stdio,
-    sync::mpsc::Sender,
+    process::Command,
+    sync::mpsc::{self, Receiver},
     thread,
+    time::Duration,
 };
 
-use crate::{
-    embedded,
-    event::{Event, UpdateInfo},
-    tools::hidden_command,
-};
+use crate::embedded;
 
-// ---------------------------------------------------------------------------
-// 常數
-// ---------------------------------------------------------------------------
+/// 目前版本：與 UI 標題列顯示的版本同一個來源。
+const CURRENT_VERSION: &str = embedded::APP_VERSION;
+const API_LATEST: &str = "https://api.github.com/repos/cloverdefa/video-downloader/releases/latest";
+/// 只信任本 repo 的 release 下載網址，避免被導向其他來源。
+const DOWNLOAD_PREFIX: &str = "https://github.com/cloverdefa/video-downloader/releases/download/";
+/// 發佈資產與壓縮檔內執行檔的名稱。
+const BIN_NAME: &str = "video-downloader";
+/// 資產名稱中代表 Linux 版的字樣（名稱已轉小寫）。
+const LINUX_TAGS: [&str; 3] = ["linux", "omarchy", "wsl"];
+/// 不可能是執行檔的附屬檔案（檢查碼、簽章等），挑選資產時排除。
+const IGNORED_SUFFIXES: [&str; 8] = [
+    ".sha256", ".sha256sum", ".sig", ".asc", ".txt", ".zip", ".deb", ".rpm",
+];
+/// 更新用暫存資料夾的名稱前綴（後面接 process id）。
+const TEMP_PREFIX: &str = "video-downloader-update-";
 
-const USER_AGENT: &str = "video-downloader";
-const RELEASE_LATEST: &str = "https://github.com/cloverdefa/video-downloader/releases/latest";
-const RELEASE_TAG_PREFIX: &str = "https://github.com/cloverdefa/video-downloader/releases/tag/";
-const RELEASE_DOWNLOAD_PREFIX: &str =
-    "https://github.com/cloverdefa/video-downloader/releases/latest/download/";
-
-/// 快取資料夾名稱：`<cache>/video-downloader/update/`。
-const APP_DIR: &str = "video-downloader";
-const UPDATE_DIR: &str = "update";
-
-/// 下載檔在快取資料夾中的檔名。
-const STAGE_FILE: &str = if cfg!(windows) {
-    "video_downloader.update.exe"
-} else {
-    "video_downloader.update.tar.gz"
-};
-
-/// 解壓縮用的子資料夾（僅 Linux 使用）。
-#[cfg(target_os = "linux")]
-const EXTRACT_DIR: &str = "extract";
-
-// ---------------------------------------------------------------------------
-// 公開 API
-// ---------------------------------------------------------------------------
-
-/// 在背景執行緒檢查是否有新版本。
-pub fn check_for_update(tx: Sender<Event>) {
-    thread::spawn(move || {
-        let _ = tx.send(Event::UpdateChecked(fetch_update_info()));
-    });
+#[derive(Deserialize)]
+struct GhRelease {
+    tag_name: String,
+    html_url: String,
+    body: Option<String>,
+    assets: Vec<GhAsset>,
 }
 
-/// 在背景執行緒下載並安裝更新。
-pub fn download_update(info: UpdateInfo, tx: Sender<Event>) {
-    thread::spawn(move || {
-        let result = install_update(&info.url, &tx);
-        let _ = tx.send(Event::UpdateReady(result));
-    });
+#[derive(Deserialize)]
+struct GhAsset {
+    name: String,
+    browser_download_url: String,
+    size: u64,
+    /// GitHub 會提供 "sha256:<hex>"；舊資產可能沒有。
+    digest: Option<String>,
 }
 
-/// 本程式在快取位置的根資料夾（不會建立），解除安裝時使用。
-///
-/// - Windows：`%LOCALAPPDATA%\video-downloader`
-/// - Linux：`$XDG_CACHE_HOME` 或 `~/.cache` 下的 `video-downloader`
-pub fn cache_root() -> PathBuf {
-    cache_base().join(APP_DIR)
+#[derive(Clone, Debug)]
+pub struct AssetInfo {
+    pub name: String,
+    pub url: String,
+    pub size: u64,
+    pub sha256: Option<String>,
 }
 
-/// 啟動時清掉先前失敗或中斷的更新所殘留的檔案。
-pub fn cleanup_stale_files() {
-    if let Ok(cache) = cache_dir() {
-        remove_update_files(&cache);
+#[derive(Clone, Debug)]
+pub struct ReleaseInfo {
+    pub version: String,
+    pub notes: String,
+    pub page: String,
+    /// 目前平台可自動安裝的檔案；None 代表只能手動下載。
+    pub asset: Option<AssetInfo>,
+    /// 這個 release 上傳的所有檔案名稱，找不到安裝檔時用來協助排查。
+    pub asset_names: Vec<String>,
+}
+
+#[derive(Clone, Debug)]
+pub enum State {
+    Idle,
+    Checking,
+    UpToDate,
+    Available(ReleaseInfo),
+    Installing { done: u64, total: u64 },
+    /// 已安裝完成，內含新版本號；重新啟動後生效。
+    Installed(String),
+    Failed(String),
+}
+
+enum Msg {
+    Checked(Result<Option<ReleaseInfo>, String>),
+    Progress { done: u64, total: u64 },
+    Installed(Result<(), String>),
+}
+
+pub struct Updater {
+    pub state: State,
+    ctx: egui::Context,
+    /// 啟動時記下執行檔路徑，替換後仍可用來重新啟動。
+    exe: PathBuf,
+    rx: Option<Receiver<Msg>>,
+    /// 靜默檢查（啟動時）：失敗或已是最新都回到 Idle，不顯示任何訊息。
+    silent: bool,
+    pending_version: Option<String>,
+    /// 最近一次嘗試安裝的版本；安裝失敗時可直接重試，不必重新檢查。
+    retry: Option<ReleaseInfo>,
+}
+
+impl Updater {
+    pub fn new(ctx: &egui::Context) -> Self {
+        Self {
+            state: State::Idle,
+            ctx: ctx.clone(),
+            exe: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("video-downloader")),
+            rx: None,
+            silent: false,
+            pending_version: None,
+            retry: None,
+        }
     }
 
-    let Some(exe) = env::current_exe().ok() else {
-        return;
-    };
-
-    if let Some(dir) = exe.parent() {
-        remove_legacy_files(dir);
+    pub fn busy(&self) -> bool {
+        matches!(self.state, State::Checking | State::Installing { .. })
     }
 
-    #[cfg(windows)]
-    cleanup_windows_leftovers(&exe);
-}
+    // ───────────── 給 UI 用的查詢介面 ─────────────
 
-// ---------------------------------------------------------------------------
-// 版本檢查
-// ---------------------------------------------------------------------------
-
-fn fetch_update_info() -> Result<Option<UpdateInfo>, String> {
-    let tag = latest_release_tag()?;
-    let version = tag.strip_prefix('v').unwrap_or(&tag);
-
-    if !is_newer_version(version, embedded::APP_VERSION) {
-        return Ok(None);
+    /// 目前狀態的顯示文字。
+    pub fn label(&self) -> String {
+        match &self.state {
+            State::Idle => "尚未檢查更新".into(),
+            State::Checking => "正在檢查更新…".into(),
+            State::UpToDate => "已是最新版本".into(),
+            State::Available(info) if info.asset.is_some() => {
+                format!("發現新版本 v{}", info.version)
+            }
+            State::Available(info) => {
+                format!("發現新版本 v{}（找不到此平台的安裝檔，請手動下載）", info.version)
+            }
+            State::Installing { .. } => "正在下載並安裝更新…".into(),
+            State::Installed(v) if v.is_empty() => "更新完成，正在重新啟動…".into(),
+            State::Installed(v) => format!("已更新至 v{v}，正在重新啟動…"),
+            State::Failed(e) => format!("更新失敗：{e}"),
+        }
     }
 
-    // GitHub 會將此固定資產網址重新導向至最新 Release 中同名的檔案。
-    Ok(Some(UpdateInfo {
-        version: version.to_owned(),
-        url: format!("{RELEASE_DOWNLOAD_PREFIX}{}", asset_name()?),
-    }))
-}
-
-fn asset_name() -> Result<&'static str, String> {
-    if !cfg!(target_arch = "x86_64") {
-        return Err("目前僅提供 Windows x64 與 Linux x86_64 更新".into());
+    /// 可以按下「立即更新」時，回傳對應資產（有新版，或上次安裝失敗可重試）。
+    pub fn installable(&self) -> Option<&AssetInfo> {
+        match &self.state {
+            State::Available(info) => info.asset.as_ref(),
+            State::Failed(_) => self.retry.as_ref().and_then(|info| info.asset.as_ref()),
+            _ => None,
+        }
     }
 
-    if cfg!(target_os = "windows") {
-        Ok("video_downloader.exe")
-    } else if cfg!(target_os = "linux") {
-        Ok("video_downloader_omarchy_wsl_x86_64.tar.gz")
-    } else {
-        Err("目前不支援此作業系統的自動更新".into())
+    /// 安裝中的進度百分比（0–100）。
+    pub fn install_progress(&self) -> Option<f32> {
+        match self.state {
+            State::Installing { done, total } if total > 0 => {
+                Some((done as f64 / total as f64 * 100.0) as f32)
+            }
+            State::Installing { .. } => Some(0.0),
+            _ => None,
+        }
     }
-}
 
-/// 透過 GitHub 網頁的重新導向取得最新 Release 標籤，不呼叫 REST API。
-fn latest_release_tag() -> Result<String, String> {
-    // Windows 使用 NUL，Unix-like 系統使用 /dev/null，避免把 HTML 寫入 stdout。
-    let null_device = if cfg!(windows) { "NUL" } else { "/dev/null" };
+    /// 是否有新版可更新（含只能手動下載、或上次安裝失敗可重試），供標題列顯示按鈕。
+    pub fn has_update(&self) -> bool {
+        match self.state {
+            State::Available(_) => true,
+            State::Failed(_) => self.retry.is_some(),
+            _ => false,
+        }
+    }
 
-    let output = hidden_command("curl")
-        .args([
-            "-fLsS",
-            "--connect-timeout",
-            "10",
-            "--max-time",
-            "30",
-            "-A",
-            USER_AGENT,
-            "-o",
-            null_device,
-            "-w",
-            "%{url_effective}",
-            RELEASE_LATEST,
-        ])
-        .output()
-        .map_err(|e| format!("無法啟動 curl：{e}"))?;
+    /// 新版資訊（版本、更新內容、下載頁）。
+    pub fn release(&self) -> Option<&ReleaseInfo> {
+        match &self.state {
+            State::Available(info) => Some(info),
+            _ => None,
+        }
+    }
 
-    if !output.status.success() {
-        let details = String::from_utf8_lossy(&output.stderr).trim().to_owned();
-        return Err(if details.is_empty() {
-            format!(
-                "無法取得 GitHub 最新 Release（curl 結束碼：{}）",
-                output.status
-            )
-        } else {
-            format!("無法取得 GitHub 最新 Release：{details}")
+    /// 已安裝完成、等待重新啟動。
+    pub fn installed(&self) -> bool {
+        matches!(self.state, State::Installed(_))
+    }
+
+    // ───────────── 動作 ─────────────
+
+    /// `silent = true`：啟動時自動檢查，只有「有新版」才會改變狀態。
+    pub fn check(&mut self, silent: bool) {
+        if self.busy() {
+            return;
+        }
+        self.silent = silent;
+        self.retry = None;
+        self.state = State::Checking;
+        let (tx, rx) = mpsc::channel();
+        self.rx = Some(rx);
+        let ctx = self.ctx.clone();
+        thread::spawn(move || {
+            let _ = tx.send(Msg::Checked(fetch_latest()));
+            ctx.request_repaint();
         });
     }
 
-    let effective_url = String::from_utf8_lossy(&output.stdout).trim().to_owned();
-    let tag = effective_url
-        .strip_prefix(RELEASE_TAG_PREFIX)
-        .ok_or_else(|| format!("無法從 GitHub Release 網址解析版本標籤：{effective_url}"))?
-        .trim_end_matches('/');
-
-    if tag.is_empty() || tag.contains(['/', '?', '#']) {
-        return Err(format!("GitHub 回傳了無效的 Release 標籤：{tag}"));
+    /// 下載並安裝目前 `Available` 的版本。
+    pub fn install(&mut self) {
+        let info = match &self.state {
+            State::Available(info) => info.clone(),
+            State::Failed(_) => match &self.retry {
+                Some(info) => info.clone(),
+                None => return,
+            },
+            _ => return,
+        };
+        let Some(asset) = info.asset.clone() else {
+            return;
+        };
+        self.pending_version = Some(info.version.clone());
+        self.retry = Some(info);
+        self.state = State::Installing {
+            done: 0,
+            total: asset.size,
+        };
+        let (tx, rx) = mpsc::channel();
+        self.rx = Some(rx);
+        let ctx = self.ctx.clone();
+        thread::spawn(move || {
+            let progress_tx = tx.clone();
+            let progress_ctx = ctx.clone();
+            let result = install_asset(&asset, |done, total| {
+                let _ = progress_tx.send(Msg::Progress { done, total });
+                progress_ctx.request_repaint();
+            });
+            let _ = tx.send(Msg::Installed(result));
+            ctx.request_repaint();
+        });
     }
 
-    Ok(tag.to_owned())
-}
-
-fn is_newer_version(latest: &str, current: &str) -> bool {
-    fn parse(version: &str) -> Vec<u64> {
-        version
-            .split('.')
-            .map(|part| part.parse().unwrap_or(0))
-            .collect()
-    }
-
-    let (latest, current) = (parse(latest), parse(current));
-
-    for i in 0..latest.len().max(current.len()) {
-        let (a, b) = (
-            latest.get(i).copied().unwrap_or(0),
-            current.get(i).copied().unwrap_or(0),
-        );
-        if a != b {
-            return a > b;
+    /// 以更新後的執行檔啟動新程序；成功回傳 true，呼叫端再關閉目前視窗。
+    pub fn restart(&mut self) -> bool {
+        let mut cmd = Command::new(&self.exe);
+        #[cfg(windows)]
+        {
+            use std::os::windows::process::CommandExt;
+            cmd.creation_flags(0x0800_0000); // CREATE_NO_WINDOW
+        }
+        match cmd.spawn() {
+            Ok(_) => true,
+            Err(e) => {
+                self.state = State::Failed(format!("無法重新啟動：{e}"));
+                false
+            }
         }
     }
 
-    false
+    /// 每個 frame 呼叫一次，收取背景執行緒的結果。
+    pub fn poll(&mut self) {
+        let Some(rx) = &self.rx else {
+            return;
+        };
+        let mut msgs = Vec::new();
+        while let Ok(m) = rx.try_recv() {
+            msgs.push(m);
+        }
+        for m in msgs {
+            match m {
+                Msg::Checked(Ok(Some(info))) => self.state = State::Available(info),
+                Msg::Checked(Ok(None)) => {
+                    self.state = if self.silent {
+                        State::Idle
+                    } else {
+                        State::UpToDate
+                    }
+                }
+                Msg::Checked(Err(e)) => {
+                    self.state = if self.silent {
+                        State::Idle
+                    } else {
+                        State::Failed(e)
+                    }
+                }
+                Msg::Progress { done, total } => {
+                    if matches!(self.state, State::Installing { .. }) {
+                        self.state = State::Installing { done, total };
+                    }
+                }
+                Msg::Installed(Ok(())) => {
+                    self.retry = None;
+                    self.state = State::Installed(self.pending_version.take().unwrap_or_default())
+                }
+                Msg::Installed(Err(e)) => self.state = State::Failed(e),
+            }
+        }
+        if !self.busy() {
+            self.rx = None;
+        }
+    }
 }
 
-// ---------------------------------------------------------------------------
-// 快取資料夾與暫存檔管理
-// ---------------------------------------------------------------------------
+// ───────────────────────── 版本比較 ─────────────────────────
 
-/// 快取位置的基底資料夾，取不到環境變數時退回系統暫存資料夾。
-///
-/// - Windows：`%LOCALAPPDATA%`
-/// - Linux：`$XDG_CACHE_HOME` 或 `~/.cache`
-fn cache_base() -> PathBuf {
+fn parse_version(s: &str) -> Option<(u64, u64, u64)> {
+    let core = s.trim().trim_start_matches(['v', 'V']);
+    let core = core.split(['-', '+']).next()?;
+    let mut parts = core.split('.');
+    let major = parts.next()?.parse().ok()?;
+    let minor = parts.next().unwrap_or("0").parse().ok()?;
+    let patch = parts.next().unwrap_or("0").parse().ok()?;
+    Some((major, minor, patch))
+}
+
+fn is_newer(remote: &str, local: &str) -> bool {
+    match (parse_version(remote), parse_version(local)) {
+        (Some(r), Some(l)) => r > l,
+        _ => false,
+    }
+}
+
+// ───────────────────────── 網路 ─────────────────────────
+
+fn agent() -> ureq::Agent {
+    ureq::AgentBuilder::new()
+        .user_agent(concat!("video-downloader/", env!("CARGO_PKG_VERSION")))
+        .timeout_connect(Duration::from_secs(10))
+        .timeout_read(Duration::from_secs(30))
+        .build()
+}
+
+fn describe(e: ureq::Error) -> String {
+    match e {
+        ureq::Error::Status(403 | 429, _) => "GitHub API 請求次數已達上限，請稍後再試".into(),
+        ureq::Error::Status(404, _) => "找不到發佈版本".into(),
+        ureq::Error::Status(code, _) => format!("HTTP {code}"),
+        ureq::Error::Transport(t) => t.to_string(),
+    }
+}
+
+fn is_tar_gz(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    name.ends_with(".tar.gz") || name.ends_with(".tgz")
+}
+
+/// 這個資產是否是目前平台可自動安裝的執行檔。
+fn matches_platform(name: &str) -> bool {
+    // 底線與空白視為連字號，GitHub 上傳時也可能把空白換成句點。
+    let name = name.to_ascii_lowercase().replace(['_', ' '], "-");
+    if !name.starts_with(BIN_NAME) {
+        return false;
+    }
+
     if cfg!(windows) {
-        env::var_os("LOCALAPPDATA").map(PathBuf::from)
+        cfg!(target_arch = "x86_64") && name.ends_with(".exe")
+    } else if cfg!(target_os = "linux") {
+        let arch: &[&str] = if cfg!(target_arch = "x86_64") {
+            &["x86-64", "amd64", "x64"]
+        } else if cfg!(target_arch = "aarch64") {
+            &["aarch64", "arm64"]
+        } else {
+            return false;
+        };
+        // 發佈檔可能以 linux，或以發行版／環境名稱（omarchy、wsl）標示 Linux 版。
+        LINUX_TAGS.iter().any(|t| name.contains(t))
+            && arch.iter().any(|a| name.contains(a))
+            && (is_tar_gz(&name) || !IGNORED_SUFFIXES.iter().any(|s| name.ends_with(s)))
     } else {
-        env::var_os("XDG_CACHE_HOME")
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-            .or_else(|| env::var_os("HOME").map(|h| PathBuf::from(h).join(".cache")))
+        false
     }
-    .unwrap_or_else(env::temp_dir)
 }
 
-/// 更新用的快取資料夾 `<cache_root>/update`（不存在時會建立）。
-fn cache_dir() -> Result<PathBuf, String> {
-    let dir = cache_root().join(UPDATE_DIR);
-    std::fs::create_dir_all(&dir).map_err(|e| format!("無法建立快取資料夾：{e}"))?;
-    Ok(dir)
+/// 從 release 資產中挑出目前平台的檔案；同時有壓縮檔與裸執行檔時優先用壓縮檔。
+fn pick_asset(assets: &[GhAsset]) -> Option<&GhAsset> {
+    assets
+        .iter()
+        .filter(|a| matches_platform(&a.name))
+        .min_by_key(|a| u8::from(!is_tar_gz(&a.name)))
 }
 
-/// 刪除快取資料夾中的更新暫存檔（下載檔與解壓資料夾）。
-fn remove_update_files(cache: &Path) {
-    let _ = std::fs::remove_file(cache.join(STAGE_FILE));
-    #[cfg(target_os = "linux")]
-    let _ = std::fs::remove_dir_all(cache.join(EXTRACT_DIR));
-}
+fn fetch_latest() -> Result<Option<ReleaseInfo>, String> {
+    let release: GhRelease = agent()
+        .get(API_LATEST)
+        .set("Accept", "application/vnd.github+json")
+        .set("X-GitHub-Api-Version", "2022-11-28")
+        .call()
+        .map_err(describe)?
+        .into_json()
+        .map_err(|e| format!("回應格式錯誤：{e}"))?;
 
-/// 清除舊版程式曾放在 exe 旁邊的殘留檔案。
-fn remove_legacy_files(dir: &Path) {
-    let _ = std::fs::remove_file(dir.join(STAGE_FILE));
-    let _ = std::fs::remove_file(dir.join("video_downloader_update.ps1"));
-    let _ = std::fs::remove_dir_all(dir.join(".video_downloader_update"));
-}
-
-// ---------------------------------------------------------------------------
-// 下載
-// ---------------------------------------------------------------------------
-
-fn install_update(url: &str, tx: &Sender<Event>) -> Result<(), String> {
-    let executable = env::current_exe().map_err(|e| e.to_string())?;
-    let cache = cache_dir()?;
-    let stage = cache.join(STAGE_FILE);
-
-    // 先完整下載到快取，成功後才置換程式。
-    let result = download_with_progress(url, &stage, tx)
-        .and_then(|()| apply_update(&stage, &cache, &executable));
-
-    // 失敗時立即清掉殘留檔；Linux 成功時由更新腳本負責清理。
-    if result.is_err() {
-        remove_update_files(&cache);
+    if !is_newer(&release.tag_name, CURRENT_VERSION) {
+        return Ok(None);
     }
+    let asset_names: Vec<String> = release.assets.iter().map(|a| a.name.clone()).collect();
+    let asset = pick_asset(&release.assets).map(|a| AssetInfo {
+            name: a.name.clone(),
+            url: a.browser_download_url.clone(),
+            size: a.size,
+            sha256: a
+                .digest
+                .as_deref()
+                .and_then(|d| d.strip_prefix("sha256:"))
+                .map(str::to_owned),
+        });
+    Ok(Some(ReleaseInfo {
+        version: release.tag_name.trim_start_matches(['v', 'V']).to_owned(),
+        notes: release.body.unwrap_or_default(),
+        page: release.html_url,
+        asset,
+        asset_names,
+    }))
+}
 
+// ───────────────────────── 下載與安裝 ─────────────────────────
+
+fn install_asset(asset: &AssetInfo, mut progress: impl FnMut(u64, u64)) -> Result<(), String> {
+    if !asset.url.starts_with(DOWNLOAD_PREFIX) {
+        return Err("下載網址不在信任範圍內".into());
+    }
+    let dir = std::env::temp_dir().join(format!("{TEMP_PREFIX}{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("無法建立暫存資料夾：{e}"))?;
+    let result = download_and_replace(asset, &dir, &mut progress);
+    let _ = std::fs::remove_dir_all(&dir);
     result
 }
 
-/// 用 curl 下載，並解析 `--progress-bar` 在 stderr 輸出的百分比。
-fn download_with_progress(url: &str, dest: &Path, tx: &Sender<Event>) -> Result<(), String> {
-    let mut child = hidden_command("curl")
-        .args(["-fL", "--progress-bar", "-A", USER_AGENT, url, "-o"])
-        .arg(dest)
-        .stdin(Stdio::null())
-        .stdout(Stdio::null())
-        .stderr(Stdio::piped())
-        .spawn()
-        .map_err(|e| format!("無法下載更新：{e}"))?;
+fn download_and_replace(
+    asset: &AssetInfo,
+    dir: &Path,
+    progress: &mut impl FnMut(u64, u64),
+) -> Result<(), String> {
+    let response = agent().get(&asset.url).call().map_err(describe)?;
+    let total = response
+        .header("Content-Length")
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or(asset.size);
+    let mut reader = response.into_reader();
+    let download = dir.join(&asset.name);
+    let mut file = File::create(&download).map_err(|e| format!("無法寫入檔案：{e}"))?;
 
-    let mut last_error = String::new();
+    let mut hasher = Sha256::new();
+    let mut buf = vec![0u8; 64 * 1024];
+    let (mut done, mut last_report) = (0u64, 0u64);
+    loop {
+        let n = reader
+            .read(&mut buf)
+            .map_err(|e| format!("下載中斷：{e}"))?;
+        if n == 0 {
+            break;
+        }
+        file.write_all(&buf[..n])
+            .map_err(|e| format!("無法寫入檔案：{e}"))?;
+        hasher.update(&buf[..n]);
+        done += n as u64;
+        if done - last_report >= 512 * 1024 {
+            last_report = done;
+            progress(done, total);
+        }
+    }
+    file.flush().map_err(|e| format!("無法寫入檔案：{e}"))?;
+    drop(file);
+    progress(done, total);
 
-    if let Some(stderr) = child.stderr.take() {
-        let mut reader = BufReader::new(stderr);
-        let mut chunk = Vec::new();
-
-        // 進度列以 '\r' 覆寫同一行，錯誤訊息則以 '\n' 結尾。
-        loop {
-            chunk.clear();
-            match reader.read_until(b'\r', &mut chunk) {
-                Ok(0) | Err(_) => break,
-                Ok(_) => {}
-            }
-
-            let text = String::from_utf8_lossy(&chunk);
-            for segment in text
-                .split(['\r', '\n'])
-                .map(str::trim)
-                .filter(|s| !s.is_empty())
-            {
-                if let Some(progress) = parse_curl_progress(segment) {
-                    let _ = tx.send(Event::UpdateProgress(progress));
-                } else if segment.starts_with("curl:") {
-                    last_error = segment.to_owned();
-                }
-            }
+    if done == 0 || (total > 0 && done != total) {
+        return Err("下載不完整".into());
+    }
+    if let Some(expected) = &asset.sha256 {
+        let actual = format!("{:x}", hasher.finalize());
+        if !actual.eq_ignore_ascii_case(expected) {
+            return Err("檢查碼不符，已中止更新".into());
         }
     }
 
-    let status = child.wait().map_err(|e| e.to_string())?;
+    let new_exe = prepare_binary(&download, dir)?;
+    check_magic(&new_exe)?;
+    self_replace::self_replace(&new_exe).map_err(|e| format!("無法替換執行檔：{e}"))
+}
 
-    if status.success() {
-        Ok(())
-    } else if last_error.is_empty() {
-        Err("下載更新檔失敗".into())
+/// Linux：資產若是 .tar.gz 就取出 `video-downloader`，否則視為裸執行檔；最後補上執行權限。
+#[cfg(unix)]
+fn prepare_binary(download: &Path, dir: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let is_archive = download
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(is_tar_gz);
+    let binary = if is_archive {
+        extract_binary(download, dir)?
     } else {
-        Err(format!("下載更新檔失敗：{last_error}"))
+        download.to_path_buf()
+    };
+
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("無法設定執行權限：{e}"))?;
+    Ok(binary)
+}
+
+#[cfg(unix)]
+fn extract_binary(archive: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let file = File::open(archive).map_err(|e| format!("無法開啟壓縮檔：{e}"))?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let entries = tar.entries().map_err(|e| format!("壓縮檔格式錯誤：{e}"))?;
+
+    let mut seen = Vec::new();
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("壓縮檔格式錯誤：{e}"))?;
+        let path = entry.path().map_err(|e| e.to_string())?.into_owned();
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        // 底線與連字號視為相同，容許 video_downloader 與 video-downloader。
+        let is_binary = file_name.to_ascii_lowercase().replace('_', "-") == BIN_NAME;
+        seen.push(file_name);
+        if is_binary {
+            let out = dir.join(format!("{BIN_NAME}.new"));
+            entry
+                .unpack(&out)
+                .map_err(|e| format!("無法解壓縮執行檔：{e}"))?;
+            return Ok(out);
+        }
+    }
+    Err(format!("壓縮檔內找不到 {BIN_NAME}（內容：{}）", seen.join("、")))
+}
+
+/// Windows：發佈檔本身就是 exe。
+#[cfg(not(unix))]
+fn prepare_binary(download: &Path, _dir: &Path) -> Result<PathBuf, String> {
+    Ok(download.to_path_buf())
+}
+
+/// 簡單檢查檔頭（Windows 為 PE "MZ"、Linux 為 ELF），避免把錯誤頁面或損毀檔案換成執行檔。
+fn check_magic(path: &Path) -> Result<(), String> {
+    let mut head = [0u8; 4];
+    File::open(path)
+        .and_then(|mut f| f.read_exact(&mut head))
+        .map_err(|e| format!("無法讀取下載的檔案：{e}"))?;
+    let ok = if cfg!(windows) {
+        &head[..2] == b"MZ"
+    } else {
+        &head == b"\x7fELF"
+    };
+    if ok {
+        Ok(())
+    } else {
+        Err("下載的檔案不是有效的執行檔".into())
     }
 }
 
-fn parse_curl_progress(segment: &str) -> Option<f32> {
-    let (before, _) = segment.rsplit_once('%')?;
-    let value = before.split_whitespace().last()?.trim_start_matches('#');
-    value.parse::<f32>().ok().map(|p| p.clamp(0.0, 100.0))
-}
+/// 清除先前異常結束遺留的更新暫存資料夾（超過一天才刪，避免誤刪其他執行中的實例）。
+pub fn cleanup_stale_files() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let own = format!("{TEMP_PREFIX}{}", std::process::id());
+    let max_age = Duration::from_secs(24 * 60 * 60);
 
-// ---------------------------------------------------------------------------
-// 置換程式：Windows
-// ---------------------------------------------------------------------------
-
-/// 在 exe 旁邊產生同名加後綴的路徑，例如 `video_downloader.exe.old`。
-#[cfg(windows)]
-fn sibling_with_suffix(executable: &Path, suffix: &str) -> Option<PathBuf> {
-    let mut name = executable.file_name()?.to_os_string();
-    name.push(suffix);
-    Some(executable.with_file_name(name))
-}
-
-/// 清除 Windows 更新留下的 `.new`（中斷的更新）與 `.old`（上一版備份）。
-#[cfg(windows)]
-fn cleanup_windows_leftovers(executable: &Path) {
-    if let Some(new) = sibling_with_suffix(executable, ".new") {
-        let _ = std::fs::remove_file(new);
-    }
-
-    if let Some(old) = sibling_with_suffix(executable, ".old") {
-        // 舊版程式可能還在結束中，最多重試約 10 秒。
-        for _ in 0..20 {
-            if !old.exists() || std::fs::remove_file(&old).is_ok() {
-                break;
-            }
-            thread::sleep(std::time::Duration::from_millis(500));
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(TEMP_PREFIX) || name == own {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age > max_age);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
         }
     }
 }
-
-/// Windows 不允許覆寫或刪除執行中的 exe，但允許重新命名：
-///
-/// 1. 把快取中的下載檔搬到 exe 旁的 `.new`（跨磁碟機時改用複製）
-/// 2. 目前的 exe 改名為 `.old`
-/// 3. `.new` 改名為正式名稱並啟動
-///
-/// 任一步失敗都會還原，`.old` 會在新版啟動時刪除。
-#[cfg(windows)]
-fn apply_update(stage: &Path, _cache: &Path, executable: &Path) -> Result<(), String> {
-    let old = sibling_with_suffix(executable, ".old").ok_or("無法決定備份檔名")?;
-    let new = sibling_with_suffix(executable, ".new").ok_or("無法決定暫存檔名")?;
-
-    let _ = std::fs::remove_file(&old);
-    let _ = std::fs::remove_file(&new);
-
-    // 步驟 1：搬到 exe 同一個資料夾，確保後續 rename 不會跨磁碟機。
-    move_file(stage, &new).map_err(|e| format!("無法搬移更新檔：{e}"))?;
-
-    // 步驟 2：備份目前的程式。
-    if let Err(e) = std::fs::rename(executable, &old) {
-        let _ = std::fs::remove_file(&new);
-        return Err(format!("無法備份目前的程式：{e}"));
-    }
-
-    // 步驟 3：換上新版，失敗則還原，避免留下沒有 exe 的狀況。
-    if let Err(e) = std::fs::rename(&new, executable) {
-        let _ = std::fs::rename(&old, executable);
-        let _ = std::fs::remove_file(&new);
-        return Err(format!("無法替換程式：{e}"));
-    }
-
-    std::process::Command::new(executable)
-        .spawn()
-        .map(drop)
-        .map_err(|e| format!("無法重新啟動：{e}"))
-}
-
-/// 搬移檔案；跨磁碟機導致 rename 失敗時改用複製後刪除來源。
-#[cfg(windows)]
-fn move_file(from: &Path, to: &Path) -> std::io::Result<()> {
-    if std::fs::rename(from, to).is_ok() {
-        return Ok(());
-    }
-
-    std::fs::copy(from, to).map(drop).inspect_err(|_| {
-        let _ = std::fs::remove_file(to);
-    })?;
-    let _ = std::fs::remove_file(from);
-    Ok(())
-}
-
-// ---------------------------------------------------------------------------
-// 置換程式：Linux
-// ---------------------------------------------------------------------------
-
-/// 在快取資料夾解壓，再由背景腳本等目前程序結束後覆寫並重新啟動。
-#[cfg(target_os = "linux")]
-fn apply_update(stage: &Path, cache: &Path, executable: &Path) -> Result<(), String> {
-    let temp = cache.join(EXTRACT_DIR);
-    let _ = std::fs::remove_dir_all(&temp);
-    std::fs::create_dir_all(&temp).map_err(|e| e.to_string())?;
-
-    let extracted = hidden_command("tar")
-        .arg("-xzf")
-        .arg(stage)
-        .arg("-C")
-        .arg(&temp)
-        .status()
-        .map_err(|e| e.to_string())?
-        .success();
-
-    if !extracted {
-        return Err("無法解壓更新檔".into());
-    }
-
-    let replacement = temp.join("video_downloader/video_downloader");
-    if !replacement.is_file() {
-        return Err("更新檔缺少程式".into());
-    }
-
-    // cp 不受跨檔案系統限制；啟動新版後再清掉快取中的下載檔與解壓資料夾。
-    let quote = |p: &Path| format!("'{}'", p.to_string_lossy().replace('\'', "'\\''"));
-    let script = format!(
-        "while kill -0 {} 2>/dev/null; do sleep 1; done; \
-         cp {rep} {exe}; chmod +x {exe}; {exe} & rm -f {stage}; rm -rf {temp}",
-        std::process::id(),
-        rep = quote(&replacement),
-        exe = quote(executable),
-        stage = quote(stage),
-        temp = quote(&temp),
-    );
-
-    hidden_command("sh")
-        .args(["-c", &script])
-        .spawn()
-        .map(drop)
-        .map_err(|e| e.to_string())
-}
-
-// ---------------------------------------------------------------------------
-// 置換程式：其他平台
-// ---------------------------------------------------------------------------
-
-#[cfg(not(any(windows, target_os = "linux")))]
-fn apply_update(_stage: &Path, _cache: &Path, _executable: &Path) -> Result<(), String> {
-    Err("目前不支援此作業系統的自動更新".into())
-}
-
-// ---------------------------------------------------------------------------
-// 測試
-// ---------------------------------------------------------------------------
 
 #[cfg(test)]
 mod tests {
-    use super::{is_newer_version, parse_curl_progress};
+    use super::*;
 
     #[test]
-    fn parses_curl_progress() {
-        assert_eq!(parse_curl_progress("######              45.2%"), Some(45.2));
-        assert_eq!(parse_curl_progress("#### 100.0%"), Some(100.0));
-        assert_eq!(parse_curl_progress("curl: (22) error"), None);
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn linux_asset_matching() {
+        assert!(matches_platform("video-downloader-linux-x86_64.tar.gz"));
+        assert!(matches_platform("video-downloader-linux-x86_64"));
+        assert!(matches_platform("video_downloader_omarchy_wsl_x86_64.tar.gz"));
+        assert!(!matches_platform("video_downloader.exe"));
+        assert!(matches_platform("video-downloader-linux-amd64.tar.gz"));
+        assert!(matches_platform("Video_Downloader_linux_x64.tgz"));
+        assert!(!matches_platform("video-downloader-linux-x86_64.sha256"));
+        assert!(!matches_platform("video-downloader-linux-aarch64.tar.gz"));
+        assert!(!matches_platform("video-downloader.exe"));
     }
 
     #[test]
-    fn compares_versions() {
-        assert!(is_newer_version("1.2.0", "1.1.9"));
-        assert!(is_newer_version("1.10", "1.9.5"));
-        assert!(!is_newer_version("1.2", "1.2.0"));
-        assert!(!is_newer_version("1.0.0", "1.0.1"));
+    fn version_compare() {
+        assert!(is_newer("v0.2.0", "0.1.9"));
+        assert!(is_newer("1.0.0", "0.9.9"));
+        assert!(is_newer("v0.1.10", "0.1.9"));
+        assert!(!is_newer("v0.1.0", "0.1.0"));
+        assert!(!is_newer("0.1.0", "0.2.0"));
+        assert!(!is_newer("garbage", "0.1.0"));
     }
 }

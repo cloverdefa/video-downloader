@@ -12,54 +12,12 @@ use crate::{
     config::{self, Settings},
     download::{self, DownloadMode},
     embedded,
-    event::{Event, UpdateInfo},
-    theme, tools, ui, update,
+    event::Event,
+    theme, tools, ui,
+    update::{self, Updater},
 };
 
 const MAX_LOG_LINES: usize = 12;
-
-/// 版本檢查與更新流程的狀態。
-pub enum UpdateState {
-    Idle,
-    Checking,
-    UpToDate,
-    CheckFailed(String),
-    Available(UpdateInfo),
-    Installing { info: UpdateInfo, progress: f32 },
-    InstallFailed(UpdateInfo, String),
-    Restarting,
-}
-
-impl UpdateState {
-    pub fn label(&self) -> String {
-        match self {
-            Self::Idle => "尚未檢查更新".into(),
-            Self::Checking => "正在檢查更新…".into(),
-            Self::UpToDate => "目前已是最新版本".into(),
-            Self::CheckFailed(error) => format!("檢查失敗：{error}"),
-            Self::Available(info) => format!("發現新版本 v{}", info.version),
-            Self::Installing { .. } => "正在下載並安裝更新…".into(),
-            Self::InstallFailed(_, error) => format!("更新失敗：{error}"),
-            Self::Restarting => "更新已完成，正在重新啟動…".into(),
-        }
-    }
-
-    /// 目前可以按下「立即更新」的版本。
-    pub fn installable(&self) -> Option<&UpdateInfo> {
-        match self {
-            Self::Available(info) | Self::InstallFailed(info, _) => Some(info),
-            _ => None,
-        }
-    }
-
-    /// 安裝中時回傳下載進度（0–100）。
-    pub fn install_progress(&self) -> Option<f32> {
-        match self {
-            Self::Installing { progress, .. } => Some(*progress),
-            _ => None,
-        }
-    }
-}
 
 pub struct DownloaderApp {
     pub url: String,
@@ -71,7 +29,7 @@ pub struct DownloaderApp {
     pub error: Option<String>,
     pub versions_open: bool,
     pub versions: String,
-    pub update: UpdateState,
+    pub update: Updater,
     pub settings: Settings,
     /// `Some` 代表解除安裝確認視窗開啟中，內容為即將刪除的資料夾。
     pub uninstall_targets: Option<Vec<PathBuf>>,
@@ -95,6 +53,10 @@ impl DownloaderApp {
             tools::cleanup_old_embedded_dirs();
         });
 
+        // 啟動時靜默檢查更新：失敗或已是最新都不打擾使用者。
+        let mut updater = Updater::new(&cc.egui_ctx);
+        updater.check(true);
+
         let (tx, rx) = mpsc::channel();
 
         Self {
@@ -106,14 +68,8 @@ impl DownloaderApp {
             busy: false,
             error: None,
             versions_open: false,
-            versions: format!(
-                "應用程式：v{}\nFFmpeg：{}\nyt-dlp：{}\nDeno：{}",
-                embedded::APP_VERSION,
-                tools::tool_version("ffmpeg"),
-                tools::tool_version("yt-dlp"),
-                tools::tool_version("deno"),
-            ),
-            update: UpdateState::Idle,
+            versions: version_summary(),
+            update: updater,
             settings: Settings::load(),
             uninstall_targets: None,
             completed_dir: None,
@@ -168,17 +124,13 @@ impl DownloaderApp {
             return;
         }
 
-        if matches!(
-            self.update,
-            UpdateState::Installing { .. } | UpdateState::Restarting
-        ) {
+        if self.update_in_progress() {
             self.error = Some("正在更新中，請等更新結束後再解除安裝。".into());
             return;
         }
 
-        let mut targets: Vec<PathBuf> = [config::config_dir(), Some(update::cache_root())]
+        let mut targets: Vec<PathBuf> = config::config_dir()
             .into_iter()
-            .flatten()
             .filter(|path| path.is_dir())
             .collect();
         targets.extend(tools::embedded_dirs());
@@ -324,19 +276,28 @@ impl DownloaderApp {
     pub fn open_versions(&mut self) {
         self.versions_open = true;
 
-        if matches!(self.update, UpdateState::Idle) {
-            update::check_for_update(self.tx.clone());
-            self.update = UpdateState::Checking;
+        // 啟動時的靜默檢查若沒有新版會回到 Idle，此時開啟視窗就重新檢查並顯示結果。
+        if matches!(self.update.state, update::State::Idle) {
+            self.update.check(false);
         }
     }
 
     pub fn install_update(&mut self) {
-        if let Some(info) = self.update.installable().cloned() {
-            self.update = UpdateState::Installing {
-                info: info.clone(),
-                progress: 0.0,
-            };
-            update::download_update(info, self.tx.clone());
+        self.update.install();
+    }
+
+    /// 更新正在下載、安裝，或已安裝完成準備重新啟動。
+    fn update_in_progress(&self) -> bool {
+        self.update.busy() || self.update.installed() || self.should_exit
+    }
+
+    fn poll_update(&mut self) {
+        self.update.poll();
+
+        // 安裝完成後自動以新版重新啟動，再關閉目前視窗。
+        // 重新啟動失敗時狀態會變成 Failed，不會重複嘗試。
+        if self.update.installed() && !self.should_exit && self.update.restart() {
+            self.should_exit = true;
         }
     }
 
@@ -347,6 +308,7 @@ impl DownloaderApp {
             self.handle_event(event);
         }
         self.check_child_exit();
+        self.poll_update();
     }
 
     fn handle_event(&mut self, event: Event) {
@@ -365,19 +327,6 @@ impl DownloaderApp {
                 self.logs.push(line);
             }
             Event::Finished(result) => self.on_finished(result),
-            Event::UpdateChecked(result) => {
-                self.update = match result {
-                    Ok(Some(info)) => UpdateState::Available(info),
-                    Ok(None) => UpdateState::UpToDate,
-                    Err(error) => UpdateState::CheckFailed(error),
-                };
-            }
-            Event::UpdateProgress(value) => {
-                if let UpdateState::Installing { progress, .. } = &mut self.update {
-                    *progress = value;
-                }
-            }
-            Event::UpdateReady(result) => self.on_update_ready(result),
         }
     }
 
@@ -404,20 +353,6 @@ impl DownloaderApp {
         }
     }
 
-    fn on_update_ready(&mut self, result: Result<(), String>) {
-        let UpdateState::Installing { info, .. } = &self.update else {
-            return;
-        };
-
-        self.update = match result {
-            Ok(()) => {
-                self.should_exit = true;
-                UpdateState::Restarting
-            }
-            Err(error) => UpdateState::InstallFailed(info.clone(), error),
-        };
-    }
-
     /// 只在子程序結束時送出一次 Finished 事件。
     fn check_child_exit(&mut self) {
         let Some(status) = self
@@ -438,6 +373,17 @@ impl DownloaderApp {
 
         let _ = self.tx.send(Event::Finished(result));
     }
+}
+
+/// 版本視窗顯示的應用程式與各工具版本。
+fn version_summary() -> String {
+    format!(
+        "應用程式：v{}\nFFmpeg：{}\nyt-dlp：{}\nDeno：{}",
+        embedded::APP_VERSION,
+        tools::tool_version("ffmpeg"),
+        tools::tool_version("yt-dlp"),
+        tools::tool_version("deno"),
+    )
 }
 
 fn missing_tool_message(display: &str, tool: &str) -> String {
