@@ -1,8 +1,9 @@
 //! 從 GitHub Releases 檢查新版本，並下載、驗證、替換目前執行檔。
 //!
 //! 發佈資產命名（請對照 release workflow，規則見 `matches_platform`）：
-//!   Windows x86_64        : `video-downloader.exe`
-//!   Linux x86_64 / aarch64 : `video-downloader-linux-<arch>.tar.gz`（也接受 .tgz、amd64/x64/arm64 等寫法）
+//!   Windows x86_64         : `video_downloader.exe`
+//!   Linux x86_64 / aarch64 : 例如 `video_downloader_omarchy_wsl_x86_64.tar.gz`
+//!                            （名稱含 linux/omarchy/wsl 與架構；也接受 .tgz、amd64/x64/arm64）
 //!                            內含名為 `video-downloader` 的執行檔，或資產本身就是執行檔
 //! 其他平台（macOS 等）沒有對應檔案，只提示新版並引導到下載頁。
 
@@ -28,6 +29,8 @@ const API_LATEST: &str = "https://api.github.com/repos/cloverdefa/video-download
 const DOWNLOAD_PREFIX: &str = "https://github.com/cloverdefa/video-downloader/releases/download/";
 /// 發佈資產與壓縮檔內執行檔的名稱。
 const BIN_NAME: &str = "video-downloader";
+/// 資產名稱中代表 Linux 版的字樣（名稱已轉小寫）。
+const LINUX_TAGS: [&str; 3] = ["linux", "omarchy", "wsl"];
 /// 不可能是執行檔的附屬檔案（檢查碼、簽章等），挑選資產時排除。
 const IGNORED_SUFFIXES: [&str; 8] = [
     ".sha256", ".sha256sum", ".sig", ".asc", ".txt", ".zip", ".deb", ".rpm",
@@ -357,7 +360,8 @@ fn matches_platform(name: &str) -> bool {
         } else {
             return false;
         };
-        name.contains("linux")
+        // 發佈檔可能以 linux，或以發行版／環境名稱（omarchy、wsl）標示 Linux 版。
+        LINUX_TAGS.iter().any(|t| name.contains(t))
             && arch.iter().any(|a| name.contains(a))
             && (is_tar_gz(&name) || !IGNORED_SUFFIXES.iter().any(|s| name.ends_with(s)))
     } else {
@@ -497,11 +501,21 @@ fn extract_binary(archive: &Path, dir: &Path) -> Result<PathBuf, String> {
     let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
     let entries = tar.entries().map_err(|e| format!("壓縮檔格式錯誤：{e}"))?;
 
+    let mut seen = Vec::new();
     for entry in entries {
         let mut entry = entry.map_err(|e| format!("壓縮檔格式錯誤：{e}"))?;
         let path = entry.path().map_err(|e| e.to_string())?.into_owned();
-        let is_binary = entry.header().entry_type().is_file()
-            && path.file_name().and_then(|n| n.to_str()) == Some(BIN_NAME);
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let file_name = path
+            .file_name()
+            .and_then(|n| n.to_str())
+            .unwrap_or_default()
+            .to_owned();
+        // 底線與連字號視為相同，容許 video_downloader 與 video-downloader。
+        let is_binary = file_name.to_ascii_lowercase().replace('_', "-") == BIN_NAME;
+        seen.push(file_name);
         if is_binary {
             let out = dir.join(format!("{BIN_NAME}.new"));
             entry
@@ -510,7 +524,7 @@ fn extract_binary(archive: &Path, dir: &Path) -> Result<PathBuf, String> {
             return Ok(out);
         }
     }
-    Err("壓縮檔內找不到執行檔".into())
+    Err(format!("壓縮檔內找不到 {BIN_NAME}（內容：{}）", seen.join("、")))
 }
 
 /// Windows：發佈檔本身就是 exe。
@@ -574,6 +588,8 @@ mod tests {
     fn linux_asset_matching() {
         assert!(matches_platform("video-downloader-linux-x86_64.tar.gz"));
         assert!(matches_platform("video-downloader-linux-x86_64"));
+        assert!(matches_platform("video_downloader_omarchy_wsl_x86_64.tar.gz"));
+        assert!(!matches_platform("video_downloader.exe"));
         assert!(matches_platform("video-downloader-linux-amd64.tar.gz"));
         assert!(matches_platform("Video_Downloader_linux_x64.tgz"));
         assert!(!matches_platform("video-downloader-linux-x86_64.sha256"));
