@@ -21,7 +21,6 @@ use crate::embedded;
 
 /// 目前版本：與 UI 標題列顯示的版本同一個來源。
 const CURRENT_VERSION: &str = embedded::APP_VERSION;
-pub const RELEASES_PAGE: &str = "https://github.com/cloverdefa/video-downloader/releases/latest";
 const API_LATEST: &str = "https://api.github.com/repos/cloverdefa/video-downloader/releases/latest";
 /// 只信任本 repo 的 release 下載網址，避免被導向其他來源。
 const DOWNLOAD_PREFIX: &str = "https://github.com/cloverdefa/video-downloader/releases/download/";
@@ -222,12 +221,6 @@ impl Updater {
             let _ = tx.send(Msg::Installed(result));
             ctx.request_repaint();
         });
-    }
-
-    pub fn dismiss(&mut self) {
-        if !self.busy() {
-            self.state = State::Idle;
-        }
     }
 
     /// 以更新後的執行檔啟動新程序；成功回傳 true，呼叫端再關閉目前視窗。
