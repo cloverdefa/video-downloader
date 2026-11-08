@@ -1,8 +1,10 @@
 //! 從 GitHub Releases 檢查新版本，並下載、驗證、替換目前執行檔。
 //!
-//! 發佈資產命名（請對照 release workflow，若不同請修改 `PLATFORM_ASSET`）：
-//!   Windows x86_64 : `video-downloader.exe`
-//! 其他平台沒有對應檔案，只提示新版並引導到下載頁。
+//! 發佈資產命名（請對照 release workflow，規則見 `matches_platform`）：
+//!   Windows x86_64        : `video-downloader.exe`
+//!   Linux x86_64 / aarch64 : `video-downloader-linux-<arch>.tar.gz`
+//!                            （內含名為 `video-downloader` 的執行檔），或直接是執行檔
+//! 其他平台（macOS 等）沒有對應檔案，只提示新版並引導到下載頁。
 
 use eframe::egui;
 use serde::Deserialize;
@@ -24,8 +26,12 @@ const CURRENT_VERSION: &str = embedded::APP_VERSION;
 const API_LATEST: &str = "https://api.github.com/repos/cloverdefa/video-downloader/releases/latest";
 /// 只信任本 repo 的 release 下載網址，避免被導向其他來源。
 const DOWNLOAD_PREFIX: &str = "https://github.com/cloverdefa/video-downloader/releases/download/";
-/// Windows x86_64 發佈檔名稱。
-const PLATFORM_ASSET: &str = "video-downloader.exe";
+/// 發佈資產與壓縮檔內執行檔的名稱。
+const BIN_NAME: &str = "video-downloader";
+/// 不可能是執行檔的附屬檔案（檢查碼、簽章等），挑選資產時排除。
+const IGNORED_SUFFIXES: [&str; 8] = [
+    ".sha256", ".sha256sum", ".sig", ".asc", ".txt", ".zip", ".deb", ".rpm",
+];
 /// 更新用暫存資料夾的名稱前綴（後面接 process id）。
 const TEMP_PREFIX: &str = "video-downloader-update-";
 
@@ -152,9 +158,13 @@ impl Updater {
         }
     }
 
-    /// 是否有新版（含只能手動下載的情況），供標題列顯示提示。
+    /// 是否有新版可更新（含只能手動下載、或上次安裝失敗可重試），供標題列顯示按鈕。
     pub fn has_update(&self) -> bool {
-        matches!(self.state, State::Available(_))
+        match self.state {
+            State::Available(_) => true,
+            State::Failed(_) => self.retry.is_some(),
+            _ => false,
+        }
     }
 
     /// 新版資訊（版本、更新內容、下載頁）。
@@ -322,12 +332,37 @@ fn describe(e: ureq::Error) -> String {
     }
 }
 
-fn platform_asset() -> Option<&'static str> {
-    if cfg!(all(windows, target_arch = "x86_64")) {
-        Some(PLATFORM_ASSET)
-    } else {
-        None
+/// 這個資產是否是目前平台可自動安裝的執行檔。
+fn matches_platform(name: &str) -> bool {
+    let name = name.to_ascii_lowercase();
+    if !name.starts_with(BIN_NAME) {
+        return false;
     }
+
+    if cfg!(windows) {
+        cfg!(target_arch = "x86_64") && name.ends_with(".exe")
+    } else if cfg!(target_os = "linux") {
+        let arch: &[&str] = if cfg!(target_arch = "x86_64") {
+            &["x86_64", "amd64"]
+        } else if cfg!(target_arch = "aarch64") {
+            &["aarch64", "arm64"]
+        } else {
+            return false;
+        };
+        name.contains("linux")
+            && arch.iter().any(|a| name.contains(a))
+            && (name.ends_with(".tar.gz") || !IGNORED_SUFFIXES.iter().any(|s| name.ends_with(s)))
+    } else {
+        false
+    }
+}
+
+/// 從 release 資產中挑出目前平台的檔案；同時有壓縮檔與裸執行檔時優先用壓縮檔。
+fn pick_asset(assets: &[GhAsset]) -> Option<&GhAsset> {
+    assets
+        .iter()
+        .filter(|a| matches_platform(&a.name))
+        .min_by_key(|a| u8::from(!a.name.to_ascii_lowercase().ends_with(".tar.gz")))
 }
 
 fn fetch_latest() -> Result<Option<ReleaseInfo>, String> {
@@ -343,9 +378,7 @@ fn fetch_latest() -> Result<Option<ReleaseInfo>, String> {
     if !is_newer(&release.tag_name, CURRENT_VERSION) {
         return Ok(None);
     }
-    let asset = platform_asset()
-        .and_then(|name| release.assets.iter().find(|a| a.name == name))
-        .map(|a| AssetInfo {
+    let asset = pick_asset(&release.assets).map(|a| AssetInfo {
             name: a.name.clone(),
             url: a.browser_download_url.clone(),
             size: a.size,
@@ -423,17 +456,71 @@ fn download_and_replace(
         }
     }
 
-    check_magic(&download)?;
-    self_replace::self_replace(&download).map_err(|e| format!("無法替換執行檔：{e}"))
+    let new_exe = prepare_binary(&download, dir)?;
+    check_magic(&new_exe)?;
+    self_replace::self_replace(&new_exe).map_err(|e| format!("無法替換執行檔：{e}"))
 }
 
-/// 簡單檢查檔頭（PE "MZ"），避免把錯誤頁面或損毀檔案換成執行檔。
+/// Linux：資產若是 .tar.gz 就取出 `video-downloader`，否則視為裸執行檔；最後補上執行權限。
+#[cfg(unix)]
+fn prepare_binary(download: &Path, dir: &Path) -> Result<PathBuf, String> {
+    use std::os::unix::fs::PermissionsExt;
+
+    let is_archive = download
+        .file_name()
+        .and_then(|n| n.to_str())
+        .is_some_and(|n| n.to_ascii_lowercase().ends_with(".tar.gz"));
+    let binary = if is_archive {
+        extract_binary(download, dir)?
+    } else {
+        download.to_path_buf()
+    };
+
+    std::fs::set_permissions(&binary, std::fs::Permissions::from_mode(0o755))
+        .map_err(|e| format!("無法設定執行權限：{e}"))?;
+    Ok(binary)
+}
+
+#[cfg(unix)]
+fn extract_binary(archive: &Path, dir: &Path) -> Result<PathBuf, String> {
+    let file = File::open(archive).map_err(|e| format!("無法開啟壓縮檔：{e}"))?;
+    let mut tar = tar::Archive::new(flate2::read::GzDecoder::new(file));
+    let entries = tar.entries().map_err(|e| format!("壓縮檔格式錯誤：{e}"))?;
+
+    for entry in entries {
+        let mut entry = entry.map_err(|e| format!("壓縮檔格式錯誤：{e}"))?;
+        let path = entry.path().map_err(|e| e.to_string())?.into_owned();
+        let is_binary = entry.header().entry_type().is_file()
+            && path.file_name().and_then(|n| n.to_str()) == Some(BIN_NAME);
+        if is_binary {
+            let out = dir.join(format!("{BIN_NAME}.new"));
+            entry
+                .unpack(&out)
+                .map_err(|e| format!("無法解壓縮執行檔：{e}"))?;
+            return Ok(out);
+        }
+    }
+    Err("壓縮檔內找不到執行檔".into())
+}
+
+/// Windows：發佈檔本身就是 exe。
+#[cfg(not(unix))]
+fn prepare_binary(download: &Path, _dir: &Path) -> Result<PathBuf, String> {
+    Ok(download.to_path_buf())
+}
+
+/// 簡單檢查檔頭（Windows 為 PE "MZ"、Linux 為 ELF），避免把錯誤頁面或損毀檔案換成執行檔。
 fn check_magic(path: &Path) -> Result<(), String> {
-    let mut head = [0u8; 2];
+    let mut head = [0u8; 4];
     File::open(path)
         .and_then(|mut f| f.read_exact(&mut head))
         .map_err(|e| format!("無法讀取下載的檔案：{e}"))?;
-    if &head == b"MZ" {
+    let ok = if cfg!(windows) {
+        &head[..2] == b"MZ"
+    } else {
+        &head == b"\x7fELF"
+    };
+    if ok {
         Ok(())
     } else {
         Err("下載的檔案不是有效的執行檔".into())
@@ -471,6 +558,16 @@ pub fn cleanup_stale_files() {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn linux_asset_matching() {
+        assert!(matches_platform("video-downloader-linux-x86_64.tar.gz"));
+        assert!(matches_platform("video-downloader-linux-x86_64"));
+        assert!(!matches_platform("video-downloader-linux-x86_64.sha256"));
+        assert!(!matches_platform("video-downloader-linux-aarch64.tar.gz"));
+        assert!(!matches_platform("video-downloader.exe"));
+    }
 
     #[test]
     fn version_compare() {

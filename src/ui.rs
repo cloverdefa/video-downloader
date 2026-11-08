@@ -205,13 +205,8 @@ fn header(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
             );
         });
 
-        // right_to_left：先加入的在最右邊。
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
-            let label = format!("版本 v{}", embedded::APP_VERSION);
-            if ui.small_button(label).clicked() {
-                app.open_versions();
-            }
-
+            // 更新中顯示進度；有新版時以「有新版」按鈕取代版本按鈕。
             if let Some(progress) = app.update.install_progress() {
                 ui.label(
                     RichText::new(format!("更新中 {progress:.0}%"))
@@ -219,8 +214,13 @@ fn header(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
                         .color(PALETTE.accent),
                 );
             } else if app.update.has_update() {
-                let hint = RichText::new("● 有新版").size(m.s(12.0)).color(PALETTE.accent);
-                if ui.small_button(hint).clicked() {
+                let label = RichText::new("● 有新版").size(m.s(12.0)).color(PALETTE.accent);
+                if ui.small_button(label).clicked() {
+                    app.open_versions();
+                }
+            } else {
+                let label = format!("版本 v{}", embedded::APP_VERSION);
+                if ui.small_button(label).clicked() {
                     app.open_versions();
                 }
             }

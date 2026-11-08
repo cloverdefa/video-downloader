@@ -29,6 +29,11 @@ ureq = { version = "2", features = ["json"] }
 sha2 = "0.10"
 self-replace = "1"
 
+# Linux 發佈檔為 .tar.gz，自動更新時需要解壓縮
+[target.'cfg(unix)'.dependencies]
+tar = "0.4"
+flate2 = "1"
+
 [target.'cfg(windows)'.build-dependencies]
 winresource = "0.1"
 
