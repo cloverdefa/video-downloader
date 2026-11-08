@@ -17,14 +17,18 @@ use std::{
     time::Duration,
 };
 
-/// 目前版本：直接取 Cargo.toml 的 version（CI 發佈前請確保與 tag 一致）。
-pub const CURRENT_VERSION: &str = env!("CARGO_PKG_VERSION");
+use crate::embedded;
+
+/// 目前版本：與 UI 標題列顯示的版本同一個來源。
+const CURRENT_VERSION: &str = embedded::APP_VERSION;
 pub const RELEASES_PAGE: &str = "https://github.com/cloverdefa/video-downloader/releases/latest";
 const API_LATEST: &str = "https://api.github.com/repos/cloverdefa/video-downloader/releases/latest";
 /// 只信任本 repo 的 release 下載網址，避免被導向其他來源。
 const DOWNLOAD_PREFIX: &str = "https://github.com/cloverdefa/video-downloader/releases/download/";
 /// Windows x86_64 發佈檔名稱。
 const PLATFORM_ASSET: &str = "video-downloader.exe";
+/// 更新用暫存資料夾的名稱前綴（後面接 process id）。
+const TEMP_PREFIX: &str = "video-downloader-update-";
 
 #[derive(Deserialize)]
 struct GhRelease {
@@ -80,22 +84,27 @@ enum Msg {
 
 pub struct Updater {
     pub state: State,
+    ctx: egui::Context,
     /// 啟動時記下執行檔路徑，替換後仍可用來重新啟動。
     exe: PathBuf,
     rx: Option<Receiver<Msg>>,
     /// 靜默檢查（啟動時）：失敗或已是最新都回到 Idle，不顯示任何訊息。
     silent: bool,
     pending_version: Option<String>,
+    /// 最近一次嘗試安裝的版本；安裝失敗時可直接重試，不必重新檢查。
+    retry: Option<ReleaseInfo>,
 }
 
 impl Updater {
-    pub fn new() -> Self {
+    pub fn new(ctx: &egui::Context) -> Self {
         Self {
             state: State::Idle,
+            ctx: ctx.clone(),
             exe: std::env::current_exe().unwrap_or_else(|_| PathBuf::from("video-downloader")),
             rx: None,
             silent: false,
             pending_version: None,
+            retry: None,
         }
     }
 
@@ -103,16 +112,78 @@ impl Updater {
         matches!(self.state, State::Checking | State::Installing { .. })
     }
 
+    // ───────────── 給 UI 用的查詢介面 ─────────────
+
+    /// 目前狀態的顯示文字。
+    pub fn label(&self) -> String {
+        match &self.state {
+            State::Idle => "尚未檢查更新".into(),
+            State::Checking => "正在檢查更新…".into(),
+            State::UpToDate => "已是最新版本".into(),
+            State::Available(info) if info.asset.is_some() => {
+                format!("發現新版本 v{}", info.version)
+            }
+            State::Available(info) => {
+                format!("發現新版本 v{}（此平台請手動下載）", info.version)
+            }
+            State::Installing { .. } => "正在下載並安裝更新…".into(),
+            State::Installed(v) if v.is_empty() => "更新完成，正在重新啟動…".into(),
+            State::Installed(v) => format!("已更新至 v{v}，正在重新啟動…"),
+            State::Failed(e) => format!("更新失敗：{e}"),
+        }
+    }
+
+    /// 可以按下「立即更新」時，回傳對應資產（有新版，或上次安裝失敗可重試）。
+    pub fn installable(&self) -> Option<&AssetInfo> {
+        match &self.state {
+            State::Available(info) => info.asset.as_ref(),
+            State::Failed(_) => self.retry.as_ref().and_then(|info| info.asset.as_ref()),
+            _ => None,
+        }
+    }
+
+    /// 安裝中的進度百分比（0–100）。
+    pub fn install_progress(&self) -> Option<f32> {
+        match self.state {
+            State::Installing { done, total } if total > 0 => {
+                Some((done as f64 / total as f64 * 100.0) as f32)
+            }
+            State::Installing { .. } => Some(0.0),
+            _ => None,
+        }
+    }
+
+    /// 是否有新版（含只能手動下載的情況），供標題列顯示提示。
+    pub fn has_update(&self) -> bool {
+        matches!(self.state, State::Available(_))
+    }
+
+    /// 新版資訊（版本、更新內容、下載頁）。
+    pub fn release(&self) -> Option<&ReleaseInfo> {
+        match &self.state {
+            State::Available(info) => Some(info),
+            _ => None,
+        }
+    }
+
+    /// 已安裝完成、等待重新啟動。
+    pub fn installed(&self) -> bool {
+        matches!(self.state, State::Installed(_))
+    }
+
+    // ───────────── 動作 ─────────────
+
     /// `silent = true`：啟動時自動檢查，只有「有新版」才會改變狀態。
-    pub fn check(&mut self, ctx: &egui::Context, silent: bool) {
+    pub fn check(&mut self, silent: bool) {
         if self.busy() {
             return;
         }
         self.silent = silent;
+        self.retry = None;
         self.state = State::Checking;
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
-        let ctx = ctx.clone();
+        let ctx = self.ctx.clone();
         thread::spawn(move || {
             let _ = tx.send(Msg::Checked(fetch_latest()));
             ctx.request_repaint();
@@ -120,21 +191,27 @@ impl Updater {
     }
 
     /// 下載並安裝目前 `Available` 的版本。
-    pub fn install(&mut self, ctx: &egui::Context) {
-        let State::Available(info) = &self.state else {
-            return;
+    pub fn install(&mut self) {
+        let info = match &self.state {
+            State::Available(info) => info.clone(),
+            State::Failed(_) => match &self.retry {
+                Some(info) => info.clone(),
+                None => return,
+            },
+            _ => return,
         };
         let Some(asset) = info.asset.clone() else {
             return;
         };
         self.pending_version = Some(info.version.clone());
+        self.retry = Some(info);
         self.state = State::Installing {
             done: 0,
             total: asset.size,
         };
         let (tx, rx) = mpsc::channel();
         self.rx = Some(rx);
-        let ctx = ctx.clone();
+        let ctx = self.ctx.clone();
         thread::spawn(move || {
             let progress_tx = tx.clone();
             let progress_ctx = ctx.clone();
@@ -164,7 +241,7 @@ impl Updater {
         match cmd.spawn() {
             Ok(_) => true,
             Err(e) => {
-                self.state = State::Failed(format!("could not restart: {e}"));
+                self.state = State::Failed(format!("無法重新啟動：{e}"));
                 false
             }
         }
@@ -202,6 +279,7 @@ impl Updater {
                     }
                 }
                 Msg::Installed(Ok(())) => {
+                    self.retry = None;
                     self.state = State::Installed(self.pending_version.take().unwrap_or_default())
                 }
                 Msg::Installed(Err(e)) => self.state = State::Failed(e),
@@ -244,8 +322,8 @@ fn agent() -> ureq::Agent {
 
 fn describe(e: ureq::Error) -> String {
     match e {
-        ureq::Error::Status(403 | 429, _) => "GitHub API rate limit reached, try again later".into(),
-        ureq::Error::Status(404, _) => "release not found".into(),
+        ureq::Error::Status(403 | 429, _) => "GitHub API 請求次數已達上限，請稍後再試".into(),
+        ureq::Error::Status(404, _) => "找不到發佈版本".into(),
         ureq::Error::Status(code, _) => format!("HTTP {code}"),
         ureq::Error::Transport(t) => t.to_string(),
     }
@@ -267,7 +345,7 @@ fn fetch_latest() -> Result<Option<ReleaseInfo>, String> {
         .call()
         .map_err(describe)?
         .into_json()
-        .map_err(|e| format!("invalid response: {e}"))?;
+        .map_err(|e| format!("回應格式錯誤：{e}"))?;
 
     if !is_newer(&release.tag_name, CURRENT_VERSION) {
         return Ok(None);
@@ -296,10 +374,10 @@ fn fetch_latest() -> Result<Option<ReleaseInfo>, String> {
 
 fn install_asset(asset: &AssetInfo, mut progress: impl FnMut(u64, u64)) -> Result<(), String> {
     if !asset.url.starts_with(DOWNLOAD_PREFIX) {
-        return Err("unexpected download URL".into());
+        return Err("下載網址不在信任範圍內".into());
     }
-    let dir = std::env::temp_dir().join(format!("video-downloader-update-{}", std::process::id()));
-    std::fs::create_dir_all(&dir).map_err(|e| format!("cannot create temp dir: {e}"))?;
+    let dir = std::env::temp_dir().join(format!("{TEMP_PREFIX}{}", std::process::id()));
+    std::fs::create_dir_all(&dir).map_err(|e| format!("無法建立暫存資料夾：{e}"))?;
     let result = download_and_replace(asset, &dir, &mut progress);
     let _ = std::fs::remove_dir_all(&dir);
     result
@@ -317,7 +395,7 @@ fn download_and_replace(
         .unwrap_or(asset.size);
     let mut reader = response.into_reader();
     let download = dir.join(&asset.name);
-    let mut file = File::create(&download).map_err(|e| format!("cannot write file: {e}"))?;
+    let mut file = File::create(&download).map_err(|e| format!("無法寫入檔案：{e}"))?;
 
     let mut hasher = Sha256::new();
     let mut buf = vec![0u8; 64 * 1024];
@@ -325,12 +403,12 @@ fn download_and_replace(
     loop {
         let n = reader
             .read(&mut buf)
-            .map_err(|e| format!("download interrupted: {e}"))?;
+            .map_err(|e| format!("下載中斷：{e}"))?;
         if n == 0 {
             break;
         }
         file.write_all(&buf[..n])
-            .map_err(|e| format!("cannot write file: {e}"))?;
+            .map_err(|e| format!("無法寫入檔案：{e}"))?;
         hasher.update(&buf[..n]);
         done += n as u64;
         if done - last_report >= 512 * 1024 {
@@ -338,22 +416,22 @@ fn download_and_replace(
             progress(done, total);
         }
     }
-    file.flush().map_err(|e| format!("cannot write file: {e}"))?;
+    file.flush().map_err(|e| format!("無法寫入檔案：{e}"))?;
     drop(file);
     progress(done, total);
 
     if done == 0 || (total > 0 && done != total) {
-        return Err("download incomplete".into());
+        return Err("下載不完整".into());
     }
     if let Some(expected) = &asset.sha256 {
         let actual = format!("{:x}", hasher.finalize());
         if !actual.eq_ignore_ascii_case(expected) {
-            return Err("checksum mismatch, update aborted".into());
+            return Err("檢查碼不符，已中止更新".into());
         }
     }
 
     check_magic(&download)?;
-    self_replace::self_replace(&download).map_err(|e| format!("cannot replace executable: {e}"))
+    self_replace::self_replace(&download).map_err(|e| format!("無法替換執行檔：{e}"))
 }
 
 /// 簡單檢查檔頭（PE "MZ"），避免把錯誤頁面或損毀檔案換成執行檔。
@@ -361,11 +439,39 @@ fn check_magic(path: &Path) -> Result<(), String> {
     let mut head = [0u8; 2];
     File::open(path)
         .and_then(|mut f| f.read_exact(&mut head))
-        .map_err(|e| format!("cannot read downloaded file: {e}"))?;
+        .map_err(|e| format!("無法讀取下載的檔案：{e}"))?;
     if &head == b"MZ" {
         Ok(())
     } else {
-        Err("downloaded file is not a valid executable".into())
+        Err("下載的檔案不是有效的執行檔".into())
+    }
+}
+
+/// 清除先前異常結束遺留的更新暫存資料夾（超過一天才刪，避免誤刪其他執行中的實例）。
+pub fn cleanup_stale_files() {
+    let Ok(entries) = std::fs::read_dir(std::env::temp_dir()) else {
+        return;
+    };
+    let own = format!("{TEMP_PREFIX}{}", std::process::id());
+    let max_age = Duration::from_secs(24 * 60 * 60);
+
+    for entry in entries.flatten() {
+        let name = entry.file_name();
+        let Some(name) = name.to_str() else {
+            continue;
+        };
+        if !name.starts_with(TEMP_PREFIX) || name == own {
+            continue;
+        }
+        let stale = entry
+            .metadata()
+            .and_then(|meta| meta.modified())
+            .ok()
+            .and_then(|time| time.elapsed().ok())
+            .is_some_and(|age| age > max_age);
+        if stale {
+            let _ = std::fs::remove_dir_all(entry.path());
+        }
     }
 }
 

@@ -1,6 +1,6 @@
 //! 所有 egui 繪圖程式碼。狀態與邏輯在 `app.rs`。
 
-use eframe::egui::{self, Button, Frame, Margin, RichText, Stroke, Vec2};
+use eframe::egui::{self, Button, Color32, Frame, Margin, RichText, Stroke, Vec2};
 
 use crate::{
     app::DownloaderApp,
@@ -85,6 +85,23 @@ fn card(m: &Metrics) -> Frame {
         .inner_margin(Margin::same(m.card_margin))
 }
 
+/// 區塊小標題。
+fn section_label(ui: &mut egui::Ui, m: &Metrics, text: &str) {
+    ui.label(RichText::new(text).size(m.s(14.0)).strong());
+}
+
+/// 主要操作按鈕：粗體文字、指定底色。
+fn action_button(m: &Metrics, label: &str, font_size: f32, fill: Color32, min_size: Vec2) -> Button<'static> {
+    Button::new(RichText::new(label).size(m.s(font_size)).strong())
+        .fill(fill)
+        .min_size(min_size)
+}
+
+/// 次要操作按鈕：一般文字、預設底色。
+fn secondary_button(m: &Metrics, label: &str, font_size: f32, min_size: Vec2) -> Button<'static> {
+    Button::new(RichText::new(label).size(m.s(font_size))).min_size(min_size)
+}
+
 fn progress_bar(progress: f32, height: f32) -> egui::ProgressBar {
     egui::ProgressBar::new((progress / 100.0).clamp(0.0, 1.0))
         .fill(PALETTE.accent)
@@ -133,7 +150,7 @@ fn compact_view(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
         if app.busy {
             ui.add(progress_bar(app.progress, m.s(18.0)));
         } else {
-            ui.label(RichText::new("網址").size(m.s(14.0)).strong());
+            section_label(ui, m, "網址");
             ui.add_space(m.s(4.0));
 
             let entry = url_input(app, ui, "https://…", m.s(12.0), egui::vec2(m.s(9.0), m.s(8.0)));
@@ -152,11 +169,8 @@ fn compact_view(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
             ("開始下載", PALETTE.accent)
         };
 
-        let button = Button::new(RichText::new(label).size(m.s(14.0)).strong())
-            .fill(color)
-            .min_size(egui::vec2(ui.available_width(), m.s(40.0)));
-
-        if ui.add(button).clicked() {
+        let min_size = egui::vec2(ui.available_width(), m.s(40.0));
+        if ui.add(action_button(m, label, 14.0, color, min_size)).clicked() {
             app.toggle_download();
         }
     });
@@ -191,10 +205,24 @@ fn header(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
             );
         });
 
+        // right_to_left：先加入的在最右邊。
         ui.with_layout(egui::Layout::right_to_left(egui::Align::Center), |ui| {
             let label = format!("版本 v{}", embedded::APP_VERSION);
             if ui.small_button(label).clicked() {
                 app.open_versions();
+            }
+
+            if let Some(progress) = app.update.install_progress() {
+                ui.label(
+                    RichText::new(format!("更新中 {progress:.0}%"))
+                        .size(m.s(12.0))
+                        .color(PALETTE.accent),
+                );
+            } else if app.update.has_update() {
+                let hint = RichText::new("● 有新版").size(m.s(12.0)).color(PALETTE.accent);
+                if ui.small_button(hint).clicked() {
+                    app.open_versions();
+                }
             }
         });
     });
@@ -202,8 +230,7 @@ fn header(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
 
 /// 輸入與下載中的版面：網址、保存路徑、下載類型與操作按鈕。
 fn input_panel(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
-    let heading = if app.busy { "下載進度" } else { "影片網址" };
-    ui.label(RichText::new(heading).size(m.s(14.0)).strong());
+    section_label(ui, m, if app.busy { "下載進度" } else { "影片網址" });
     ui.add_space(m.s(6.0));
 
     let entry = if app.busy {
@@ -281,15 +308,18 @@ fn completed_panel(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
     ui.add_space(m.s(18.0));
 
     ui.horizontal(|ui| {
-        let open = Button::new(RichText::new("打開資料夾").size(m.s(14.0)).strong())
-            .fill(PALETTE.accent)
-            .min_size(egui::vec2(m.s(170.0), m.s(46.0)));
+        let open = action_button(
+            m,
+            "打開資料夾",
+            14.0,
+            PALETTE.accent,
+            egui::vec2(m.s(170.0), m.s(46.0)),
+        );
         if ui.add(open).clicked() {
             app.open_download_dir();
         }
 
-        let again = Button::new(RichText::new("下載其他影片").size(m.s(13.0)))
-            .min_size(egui::vec2(m.s(130.0), m.s(46.0)));
+        let again = secondary_button(m, "下載其他影片", 13.0, egui::vec2(m.s(130.0), m.s(46.0)));
         if ui.add(again).clicked() {
             app.new_download();
         }
@@ -298,7 +328,7 @@ fn completed_panel(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
 
 /// 保存路徑：顯示目前實際使用的資料夾，可選擇或還原預設。
 fn save_path_row(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
-    ui.label(RichText::new("保存路徑").size(m.s(14.0)).strong());
+    section_label(ui, m, "保存路徑");
     ui.add_space(m.s(4.0));
 
     let is_custom = app.settings.download_dir.is_some();
@@ -328,7 +358,7 @@ fn save_path_row(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
 }
 
 fn controls(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
-    ui.label(RichText::new("下載類型").size(m.s(14.0)).strong());
+    section_label(ui, m, "下載類型");
     ui.add_space(m.s(4.0));
 
     ui.horizontal(|ui| {
@@ -341,15 +371,18 @@ fn controls(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
     ui.add_space(m.s(20.0));
 
     ui.horizontal(|ui| {
-        let start = Button::new(RichText::new("開始下載").size(m.s(14.0)).strong())
-            .fill(PALETTE.accent)
-            .min_size(egui::vec2(m.s(170.0), m.s(46.0)));
+        let start = action_button(
+            m,
+            "開始下載",
+            14.0,
+            PALETTE.accent,
+            egui::vec2(m.s(170.0), m.s(46.0)),
+        );
         if ui.add_enabled(!app.busy, start).clicked() {
             app.start();
         }
 
-        let cancel = Button::new(RichText::new("取消下載").size(m.s(13.0)))
-            .min_size(egui::vec2(m.s(110.0), m.s(46.0)));
+        let cancel = secondary_button(m, "取消下載", 13.0, egui::vec2(m.s(110.0), m.s(46.0)));
         if ui.add_enabled(app.busy, cancel).clicked() {
             app.cancel();
         }
@@ -433,15 +466,9 @@ fn versions_window(app: &mut DownloaderApp, ctx: &egui::Context) {
         .open(&mut open)
         .show(ctx, |ui| {
             ui.label(&app.versions);
-            ui.separator();
-            ui.label(app.update.label());
 
-            if app.update.installable().is_some() && ui.button("立即更新").clicked() {
-                app.install_update();
-            }
-            if let Some(progress) = app.update.install_progress() {
-                ui.add(progress_bar(progress, 16.0).desired_width(240.0));
-            }
+            ui.separator();
+            update_section(app, ui);
 
             ui.separator();
             if ui
@@ -453,6 +480,49 @@ fn versions_window(app: &mut DownloaderApp, ctx: &egui::Context) {
         });
 
     app.versions_open = open;
+}
+
+/// 版本視窗中的更新區塊：狀態、進度、更新內容與操作按鈕。
+fn update_section(app: &mut DownloaderApp, ui: &mut egui::Ui) {
+    ui.label(app.update.label());
+
+    if let Some(progress) = app.update.install_progress() {
+        ui.add(progress_bar(progress, 16.0).desired_width(240.0));
+    }
+
+    // 先取出需要的資料，避免持有 app.update 的借用時又呼叫會修改它的方法。
+    let notes = app
+        .update
+        .release()
+        .map(|info| info.notes.trim().to_owned())
+        .filter(|notes| !notes.is_empty());
+    let manual_page = app
+        .update
+        .release()
+        .filter(|info| info.asset.is_none())
+        .map(|info| info.page.clone());
+    let can_install = app.update.installable().is_some();
+    let can_check = !app.update.busy() && !app.update.installed();
+
+    if let Some(notes) = notes {
+        egui::CollapsingHeader::new("更新內容").show(ui, |ui| {
+            egui::ScrollArea::vertical().max_height(160.0).show(ui, |ui| {
+                ui.label(notes);
+            });
+        });
+    }
+
+    ui.horizontal(|ui| {
+        if can_install && ui.button("立即更新").clicked() {
+            app.install_update();
+        }
+        if can_check && ui.button("檢查更新").clicked() {
+            app.update.check(false);
+        }
+        if let Some(page) = &manual_page {
+            ui.hyperlink_to("前往下載頁", page);
+        }
+    });
 }
 
 /// 解除安裝確認視窗：列出將被刪除的資料夾，讓使用者選擇是或否。
