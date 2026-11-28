@@ -2,7 +2,7 @@
 name = "video-downloader"
 version = "1.17.0"
 edition = "2024"
-description = "yt-dlp / ffmpeg / Deno GUI 影片下載器"
+description = "yt-dlp / ffmpeg / Deno GUI video downloader"
 repository = "https://github.com/cloverdefa/video-downloader"
 
 [dependencies]

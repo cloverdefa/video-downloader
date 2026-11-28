@@ -197,7 +197,7 @@ fn full_view(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
 fn header(app: &mut DownloaderApp, ui: &mut egui::Ui, m: &Metrics) {
     ui.horizontal(|ui| {
         ui.vertical(|ui| {
-            ui.heading(RichText::new("影片下載器").size(m.s(24.0)).strong());
+            ui.heading(RichText::new(crate::APP_TITLE).size(m.s(24.0)).strong());
             ui.label(
                 RichText::new("貼上連結，快速下載影片或音訊")
                     .size(m.s(12.0))
