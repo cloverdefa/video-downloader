@@ -1,6 +1,6 @@
 [Desktop Entry]
 Type=Application
-Name=影片下載器
+Name=Video Downloader
 GenericName=Video Downloader
 Comment=yt-dlp GUI
 Exec=@EXEC@

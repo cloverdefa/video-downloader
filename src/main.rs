@@ -19,7 +19,7 @@ use eframe::egui;
 
 use crate::app::DownloaderApp;
 
-const APP_TITLE: &str = "影片下載器";
+const APP_TITLE: &str = "Video Downloader";
 const APP_ID: &str = "video-downloader";
 
 fn main() -> eframe::Result {
